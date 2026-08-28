@@ -1,6 +1,6 @@
 {
   "name": "magic-key",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "A focused wedding video editor for Byrne Photography.",
   "author": "Byrne Photography",
@@ -50,7 +50,9 @@
       "output": "release"
     },
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "artifactName": "Magic-Key-Setup-${version}.${ext}"
     },
     "nsis": {
