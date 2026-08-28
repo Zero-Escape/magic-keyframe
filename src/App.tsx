@@ -67,7 +67,7 @@ export default function App() {
               <span className="media-copy"><strong>{item.name}</strong><small>{item.kind === 'video' ? '4K video' : 'External audio'}</small></span>
             </div>)}
           </div>
-          <div className="assistant-card"><WandSparkles size={18} /><div><strong>Magic Sync</strong><small>{video && audio ? 'Ready to align your audio' : 'Add video and audio to begin'}</small></div><span className="beta">BETA</span></div>
+          <div className="assistant-card"><WandSparkles size={18} /><div><strong>Audio alignment</strong><small>{video && audio ? 'Waveforms ready for manual syncing' : 'Add video and audio to begin'}</small></div><span className="beta">PRECISE</span></div>
         </aside>
 
         <section className="viewer-panel panel">
@@ -87,7 +87,7 @@ export default function App() {
       <section className="timeline-panel panel">
         <div className="timeline-tools">
           <div className="tool-group"><button className="tool active"><Layers3 size={16} /> Select</button><button className="tool"><Scissors size={16} /> Split</button></div>
-          <button className="magic-sync" disabled={!video || !audio}><WandSparkles size={16} /> Magic Sync</button>
+          <button className="magic-sync" disabled={!video || !audio}><WandSparkles size={16} /> Align audio</button>
           <div className="zoom"><ZoomOut size={16} /><input type="range" min="30" max="100" value={zoom} onChange={(e) => setZoom(Number(e.target.value))} /><ZoomIn size={16} /></div>
         </div>
         <div className="timeline-scroll">

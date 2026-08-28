@@ -7,7 +7,7 @@ A focused Windows 11 video editor for Byrne Photography's long-form wedding foot
 - Sony XAVC S 4K 29.97p import
 - 48 kHz external recorder audio import
 - Proxy-based preview
-- Manual and waveform-assisted audio synchronization
+- Manual audio synchronization with visible waveforms and precise nudging
 - Beginning/end trims, occasional middle cuts, and multiple camera clips
 - 4K MP4 delivery with NVIDIA NVENC acceleration
 
@@ -18,4 +18,5 @@ npm install
 npm run dev
 ```
 
-The current milestone is the desktop shell and timeline interaction prototype.
+Automatic waveform matching is intentionally deferred. The current milestone is the
+media-analysis, proxy, and waveform pipeline.
