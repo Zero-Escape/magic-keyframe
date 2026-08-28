@@ -3,15 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "description": "A focused wedding video editor for Byrne Photography.",
+  "author": "Byrne Photography",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "tsc && vite build && tsc -p electron/tsconfig.json",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "package:win": "npm run build && electron-builder --win nsis",
+    "package:dir": "npm run build && electron-builder --dir"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest"
@@ -22,8 +27,37 @@
     "@types/react-dom": "latest",
     "concurrently": "latest",
     "electron": "latest",
+    "electron-builder": "^26.15.3",
     "typescript": "latest",
     "vite": "latest",
     "wait-on": "latest"
+  },
+  "build": {
+    "appId": "com.byrnephotography.magickey",
+    "productName": "Magic Key",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**",
+      "node_modules/ffprobe-static/**"
+    ],
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "node_modules/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": ["nsis"],
+      "artifactName": "Magic-Key-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
   }
 }
