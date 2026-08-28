@@ -17,5 +17,7 @@ interface ImportedMedia {
 interface Window {
   magicKey?: {
     chooseMedia: () => Promise<ImportedMedia[]>
+    generateProxy: (filePath: string) => Promise<{ path: string; url: string }>
+    exportVideo: (request: { videoPath: string; audioPath?: string; trimStart: number; trimEnd: number; audioOffset: number }) => Promise<{ canceled: boolean; path?: string }>
   }
 }

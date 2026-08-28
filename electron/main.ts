@@ -2,6 +2,8 @@ import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { pathToFileURL } from 'node:url'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { access, mkdir } from 'node:fs/promises'
 import packagedFfmpegPath from 'ffmpeg-static'
 
 const packagedFfprobePath: string = require('ffprobe-static').path
@@ -31,6 +33,55 @@ function runProcess(executable: string, args: string[]): Promise<Buffer> {
       ? resolve(Buffer.concat(output))
       : reject(new Error(Buffer.concat(errors).toString() || `Media process exited with ${code}`)))
   })
+}
+
+async function fileExists(filePath: string) {
+  try { await access(filePath); return true } catch { return false }
+}
+
+async function generateProxy(filePath: string) {
+  if (!packagedFfmpegPath) throw new Error('FFmpeg is unavailable')
+  const proxyFolder = path.join(app.getPath('userData'), 'proxies')
+  await mkdir(proxyFolder, { recursive: true })
+  const key = createHash('sha1').update(filePath).digest('hex').slice(0, 16)
+  const outputPath = path.join(proxyFolder, `${key}-1080p.mp4`)
+  if (!await fileExists(outputPath)) {
+    const input = ['-y', '-v', 'error', '-i', filePath, '-map', '0:v:0', '-map', '0:a:0?', '-vf', 'scale=-2:1080']
+    const output = ['-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', outputPath]
+    try {
+      await runProcess(unpackedPath(packagedFfmpegPath), [...input, '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '25', ...output])
+    } catch {
+      await runProcess(unpackedPath(packagedFfmpegPath), [...input, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', ...output])
+    }
+  }
+  return { path: outputPath, url: pathToFileURL(outputPath).toString() }
+}
+
+type ExportRequest = { videoPath: string; audioPath?: string; trimStart: number; trimEnd: number; audioOffset: number }
+
+async function exportVideo(request: ExportRequest) {
+  if (!packagedFfmpegPath) throw new Error('FFmpeg is unavailable')
+  const result = await dialog.showSaveDialog({
+    title: 'Export 4K MP4',
+    defaultPath: path.join(app.getPath('videos'), 'Magic-Key-Export.mp4'),
+    filters: [{ name: 'MP4 video', extensions: ['mp4'] }],
+  })
+  if (result.canceled || !result.filePath) return { canceled: true }
+  const duration = Math.max(0.01, request.trimEnd - request.trimStart)
+  const args = ['-y', '-v', 'error', '-ss', request.trimStart.toFixed(6), '-i', request.videoPath]
+  if (request.audioPath) args.push('-i', request.audioPath)
+  if (request.audioPath) {
+    const audioStart = request.trimStart - request.audioOffset
+    const delay = audioStart < 0 ? `,adelay=${Math.round(-audioStart * 1000)}:all=1` : ''
+    args.push('-filter_complex', `[1:a]atrim=start=${Math.max(0, audioStart).toFixed(6)}:duration=${duration.toFixed(6)},asetpts=PTS-STARTPTS${delay}[external]`, '-map', '0:v:0', '-map', '[external]')
+  } else args.push('-map', '0:v:0', '-map', '0:a:0?')
+  const tail = ['-t', duration.toFixed(6), '-c:a', 'aac', '-b:a', '320k', '-ar', '48000', '-movflags', '+faststart', result.filePath]
+  try {
+    await runProcess(unpackedPath(packagedFfmpegPath), [...args, '-c:v', 'h264_nvenc', '-preset', 'p5', '-cq', '19', '-b:v', '0', ...tail])
+  } catch {
+    await runProcess(unpackedPath(packagedFfmpegPath), [...args, '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', ...tail])
+  }
+  return { canceled: false, path: result.filePath }
 }
 
 function frameRate(value?: string) {
@@ -115,6 +166,9 @@ ipcMain.handle('media:choose', async () => {
     }
   }))
 })
+
+ipcMain.handle('media:proxy', (_event, filePath: string) => generateProxy(filePath))
+ipcMain.handle('media:export', (_event, request: ExportRequest) => exportVideo(request))
 
 app.whenReady().then(() => {
   createWindow()
