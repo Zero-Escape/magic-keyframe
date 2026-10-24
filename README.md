@@ -1,4 +1,4 @@
-# Magic Key
+# Magic Keyframe
 
 A focused Windows 11 video editor for Byrne Photography's long-form wedding footage.
 
@@ -8,15 +8,79 @@ A focused Windows 11 video editor for Byrne Photography's long-form wedding foot
 - 48 kHz external recorder audio import
 - Proxy-based preview
 - Manual audio synchronization with visible waveforms and precise nudging
-- Beginning/end trims, occasional middle cuts, and multiple camera clips
+- Beginning/end trims and middle cuts on one camera clip
 - 4K MP4 delivery with NVIDIA NVENC acceleration
 
-## Development
+## Windows: clone and run
 
-```bash
-npm install
-npm run dev
+Install **Git for Windows** and **Node.js 24 LTS** first. In PowerShell:
+
+```powershell
+git clone https://github.com/Zero-Escape/magic-keyframe.git
+cd magic-keyframe
+npm ci
+npm start
 ```
 
-Automatic waveform matching is intentionally deferred. The current milestone is the
-media-analysis, proxy, and waveform pipeline.
+`npm start` prepares the media runtime, builds the app, and opens the desktop editor.
+The first setup downloads a pinned Windows FFmpeg binary and verifies its SHA-256.
+Client footage, proxies, generated builds, and downloaded executables are not in Git.
+
+### Updating your clone
+
+Close the app, open PowerShell in the cloned `magic-keyframe` folder, then run:
+
+```powershell
+git pull --ff-only
+npm ci
+npm start
+```
+
+This runs the app from your clone. It does **not** update a separate portable folder
+you previously extracted. To make a new standalone Windows ZIP instead, run
+`npm run package:portable` and use the ZIP in `release/`.
+
+### Development and checks
+
+`npm run dev` launches the hot-reloading Vite/Electron development mode.
+`npm run verify:media` builds and runs the rendered media regression checks.
+Windows GitHub Actions builds a portable ZIP on pushes to main; tagged version builds
+also publish it to the matching GitHub release. GitHub Actions runs must finish before
+their downloadable artifacts are available.
+
+## Editing
+
+To remove a middle section, scrub to its beginning and click **Split**, repeat at its
+end, click the middle section, then click **Remove**. Drag either edge to refine a cut;
+the IN/OUT fields edit the selected section numerically. The timeline zooms and scrolls,
+and the sidebar and timeline dividers can be dragged to fit a wide monitor.
+
+Drop local media anywhere in the project window, or use Import. Select Video 1 or Audio 1
+to apply Split, Remove, and the IN/OUT fields to that track. Audio-only cuts leave silence
+at their original positions; they do not shift later audio. Drag an audio section to shift
+the entire external audio track for sync.
+
+Each track has an independent mute switch. Video 1 also has a visibility switch. These
+settings affect both preview and export; hidden video exports as black with audio
+controlled separately. Importing external audio mutes camera audio by default; unmute
+both to compare sync (both enabled sources are mixed on export).
+
+The current build handles one video and one optional external audio track. It exports
+kept sections as one 8-bit H.264 4:2:0 MP4 with AAC audio. Multiple clips, automatic
+waveform sync, and project save/reopen are not yet implemented.
+
+For a Windows test build from Linux, run `npm run package:portable`. The setup
+step obtains a Windows-native FFmpeg executable instead of packaging the Linux one.
+The portable ZIP runs after extraction; it is not an installer. Its Windows media
+executable is unpacked outside ASAR so proxy and export processes can execute it.
+
+Run `npm run verify:media` for rendered media checks of 10-bit 4:2:2 conversion, audio
+cut silence/alignment, source mixing/muting, and hidden-video output. Windows native
+file dropping and hardware encoding still require a hands-on Windows check.
+
+Discord delivery: the full Windows portable ZIP currently exceeds the 100 MiB
+attachment cap. For the existing Electron 44 portable installation, a smaller update
+ZIP can carry `resources/app.asar`, the current unpacked FFmpeg asset/licenses, and
+installation instructions. Close the app, merge into its existing folder, and rename
+the executable to Magic Keyframe.exe. Do not assume an app.asar-only update is safe
+if runtime/dependency versions or Electron ASAR-integrity fuses change.

@@ -3,6 +3,8 @@ name: Windows build
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
@@ -19,16 +21,16 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run package:win
+      - run: npm run package:portable
       - uses: actions/upload-artifact@v4
         with:
-          name: Magic-Key-Windows
-          path: release/*.exe
+          name: Magic-Keyframe-Windows
+          path: release/*.zip
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: release/*.exe
+          files: release/*.zip
           generate_release_notes: true
       - name: Mark successful Windows build
         if: startsWith(github.ref, 'refs/tags/v')

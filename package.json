@@ -1,17 +1,21 @@
 {
-  "name": "magic-key",
-  "version": "0.1.1",
+  "name": "magic-keyframe",
+  "version": "0.1.3",
   "private": true,
   "description": "A focused wedding video editor for Byrne Photography.",
   "author": "Byrne Photography",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev": "npm run prepare:desktop && npm run build && concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron . --dev\"",
     "build": "tsc && vite build && tsc -p electron/tsconfig.json",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "package:win": "npm run build && electron-builder --win nsis",
-    "package:dir": "npm run build && electron-builder --dir"
+    "package:win": "npm run prepare:desktop && npm run build && electron-builder --win nsis",
+    "package:dir": "npm run build && electron-builder --dir",
+    "verify:media": "npm run build && node scripts/verify-export.cjs",
+    "prepare:desktop": "node scripts/prepare-desktop.cjs",
+    "start": "npm run prepare:desktop && npm run build && electron .",
+    "package:portable": "npm run prepare:desktop && npm run build && electron-builder --win zip --config.win.signAndEditExecutable=false"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
@@ -34,16 +38,23 @@
   },
   "build": {
     "appId": "com.byrnephotography.magickey",
-    "productName": "Magic Key",
+    "productName": "Magic Keyframe",
     "asar": true,
     "asarUnpack": [
       "node_modules/ffmpeg-static/**",
-      "node_modules/ffprobe-static/**"
+      "node_modules/ffprobe-static/**",
+      "assets/ffmpeg-win64.exe"
     ],
     "files": [
       "dist/**",
       "dist-electron/**",
+      "assets/**",
       "node_modules/**",
+      "!node_modules/ffmpeg-static/ffmpeg",
+      "!node_modules/ffmpeg-static/ffmpeg.exe*",
+      "!node_modules/ffprobe-static/bin/darwin/**",
+      "!node_modules/ffprobe-static/bin/linux/**",
+      "!node_modules/ffprobe-static/bin/win32/ia32/**",
       "package.json"
     ],
     "directories": {
@@ -53,13 +64,17 @@
       "target": [
         "nsis"
       ],
-      "artifactName": "Magic-Key-Setup-${version}.${ext}"
+      "artifactName": "Magic-Keyframe-Portable-${version}.${ext}"
     },
     "nsis": {
+      "artifactName": "Magic-Keyframe-Setup-${version}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     }
+  },
+  "engines": {
+    "node": ">=24"
   }
 }

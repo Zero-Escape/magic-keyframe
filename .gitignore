@@ -5,3 +5,7 @@ release/
 .test-output/
 samples/
 *.log
+
+# Downloaded Windows media runtime (see npm run prepare:desktop).
+assets/*.exe
+assets/*.download
