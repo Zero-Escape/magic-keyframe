@@ -7,7 +7,7 @@ import { access, mkdir, rename, stat, unlink, readFile, writeFile } from 'node:f
 import { readProject, writeProject, type Project } from './project-file.js'
 import { analyzeWaveform, audioThumbnail, type WaveformData } from './waveform.js'
 import packagedFfmpegStaticPath from 'ffmpeg-static'
-import { buildExportFilter, type ExportSegment } from './export-filter.js'
+import { buildTimelineExportFilter, type PlacedSegment } from './export-filter.js'
 
 const packagedFfmpegPath = process.platform === 'win32'
   ? path.join(app.getAppPath(), 'assets', 'ffmpeg-win64.exe')
@@ -82,24 +82,23 @@ async function buildProxy(filePath: string) {
   return { path: outputPath, url: pathToFileURL(outputPath).toString() }
 }
 
-type ExportRequest = { videoPath: string; audioPath?: string; segments: ExportSegment[]; audioOffset: number; audioSegments?: ExportSegment[]; videoMuted?: boolean; audioMuted?: boolean; videoHidden?: boolean }
+type ExportRequest = { videoPath: string; audioPath?: string; segments: PlacedSegment[]; audioSegments: PlacedSegment[]; videoMuted?: boolean; audioMuted?: boolean; videoHidden?: boolean }
 
 async function exportVideo(request: ExportRequest) {
   if (!packagedFfmpegPath) throw new Error('FFmpeg is unavailable')
   const metadata = await inspectMedia(request.videoPath)
-  if (!metadata.video || !Array.isArray(request.segments) || !request.segments.length || !Number.isFinite(request.audioOffset))
-    throw new Error('Invalid video edit')
-  const valid = request.segments.every((segment, index) => Number.isFinite(segment.start) && Number.isFinite(segment.end)
-    && segment.start >= 0 && segment.end > segment.start && segment.end <= metadata.duration + .25
-    && (index === 0 || segment.start >= request.segments[index - 1].end))
-  if (!valid) throw new Error('Invalid cut points')
-  if (request.audioPath && request.audioSegments) {
-    const audioMetadata = await inspectMedia(request.audioPath)
-    const validAudio = request.audioSegments.every((segment, index) => Number.isFinite(segment.start) && Number.isFinite(segment.end)
-      && segment.start >= 0 && segment.end > segment.start && segment.end <= audioMetadata.duration + .25
-      && (index === 0 || segment.start >= request.audioSegments![index - 1].end))
-    if (!validAudio) throw new Error('Invalid audio cut points')
+  if (!metadata.video || !Array.isArray(request.segments) || !request.segments.length || !Array.isArray(request.audioSegments)) throw new Error('Invalid timeline edit')
+  const valid = (clips: PlacedSegment[], duration: number, video: boolean) => {
+    const sorted = [...clips].sort((a, b) => a.at - b.at)
+    return sorted.length <= 10000 && sorted.every((c, i) => Number.isFinite(c.start) && Number.isFinite(c.end) && Number.isFinite(c.at)
+      && c.start >= 0 && c.end > c.start && c.end <= duration + .05 && (!video || c.at >= -1e-7)
+      && (i === 0 || c.at >= sorted[i - 1].at + sorted[i - 1].end - sorted[i - 1].start - 1e-7))
   }
+  if (!valid(request.segments, metadata.duration, true)) throw new Error('Invalid video cut points or overlapping clips')
+  if (request.audioPath) {
+    const audioMetadata = await inspectMedia(request.audioPath)
+    if (!valid(request.audioSegments, audioMetadata.duration, false)) throw new Error('Invalid audio cut points or overlapping clips')
+  } else if (request.audioSegments.length) throw new Error('Audio clips have no source media')
   const result = await dialog.showSaveDialog({
     title: 'Export 4K MP4',
     defaultPath: path.join(app.getPath('videos'), 'Magic-Keyframe-Export.mp4'),
@@ -108,9 +107,9 @@ async function exportVideo(request: ExportRequest) {
   if (result.canceled || !result.filePath) return { canceled: true }
   if ([request.videoPath, request.audioPath].some((input) => input && path.resolve(input) === path.resolve(result.filePath!)))
     throw new Error('Choose an export path different from the source media')
-  const filter = buildExportFilter(request.segments, request.audioOffset, Boolean(request.audioPath), Boolean(metadata.audio), {
-    videoMuted: request.videoMuted ?? Boolean(request.audioPath), audioMuted: request.audioMuted ?? false,
-    videoHidden: request.videoHidden ?? false, audioSegments: request.audioSegments,
+  const filter = buildTimelineExportFilter(request.segments, request.audioSegments, Boolean(request.audioPath), Boolean(metadata.audio), {
+    width: metadata.video.width || 3840, height: metadata.video.height || 2160, fps: metadata.video.fps || 29.97,
+    videoMuted: request.videoMuted ?? Boolean(request.audioPath), audioMuted: request.audioMuted ?? false, videoHidden: request.videoHidden ?? false,
   })
   const args = ['-y', '-v', 'error', '-i', request.videoPath]
   if (request.audioPath) args.push('-i', request.audioPath)
@@ -234,7 +233,12 @@ function createWindow() {
       { label: 'Undo edit', accelerator: 'CmdOrCtrl+Z', click: () => sendCommand('undo') },
       { label: 'Redo edit', accelerator: 'CmdOrCtrl+Shift+Z', click: () => sendCommand('redo') },
       { label: 'Redo edit', accelerator: 'Ctrl+Y', click: () => sendCommand('redo') },
-      { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' },
+      { type: 'separator' },
+      { label: 'Link clips', accelerator: 'CmdOrCtrl+L', click: () => sendCommand('link') },
+      { label: 'Unlink clips', accelerator: 'CmdOrCtrl+Shift+L', click: () => sendCommand('unlink') },
+      { label: 'Split selected clips', accelerator: 'CmdOrCtrl+B', click: () => sendCommand('split') },
+      { label: 'Select all clips', accelerator: 'CmdOrCtrl+A', click: () => sendCommand('selectAll') },
+      { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' },
     ] },
     { role: 'viewMenu' }, { role: 'windowMenu' },
   ]))

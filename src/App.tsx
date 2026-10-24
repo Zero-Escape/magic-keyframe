@@ -1,19 +1,17 @@
 import { memo, useEffect, useRef, useState, type CSSProperties } from 'react'
-import { AudioLines, ChevronDown, Clapperboard, Download, Eye, EyeOff, FolderOpen, FilePlus2, Save, KeyRound, Layers3, Pause, Play, Plus, Redo2, Scissors, SkipBack, SkipForward, Sparkles, Trash2, Undo2, Video, Volume2, VolumeX, WandSparkles, ZoomIn, ZoomOut } from 'lucide-react'
+import { AudioLines, ChevronDown, Clapperboard, Download, Eye, EyeOff, FolderOpen, FilePlus2, Save, KeyRound, Layers3, Link2, Unlink2, Pause, Play, Plus, Redo2, Scissors, SkipBack, SkipForward, Sparkles, Trash2, Undo2, Video, Volume2, VolumeX, WandSparkles, ZoomIn, ZoomOut } from 'lucide-react'
 
-type Track = 'video' | 'audio'
+import { activeClip, endAt, linkedSelection, linkClips, unlinkClips, moveClips, removeClips, splitClips, trimClip, timelineEnd, ordered, type Track, type Segment, type TimelineEdit } from '../electron/timeline'
 type MediaItem = ImportedMedia & { id: string; kind: Track }
-type Segment = { id: string; start: number; end: number }
-type Edit = { video: Segment[]; audio: Segment[]; audioOffset: number }
+type Edit = TimelineEdit
 type Snapshot = { media: MediaItem[]; edit: Edit; videoMuted: boolean; audioMuted: boolean; videoHidden: boolean }
-const emptySnapshot: Snapshot = { media: [], edit: { video: [], audio: [], audioOffset: 0 }, videoMuted: false, audioMuted: false, videoHidden: false }
+const emptySnapshot: Snapshot = { media: [], edit: { video: [], audio: [] }, videoMuted: false, audioMuted: false, videoHidden: false }
 const fingerprint = (state: Snapshot) => JSON.stringify({ ...state, media: state.media.map(({ id, kind, path }) => ({ id, kind, path })) })
 const formatTime = (seconds: number, precise = false) => {
   const whole = Math.max(0, Math.floor(seconds))
   const clock = `${String(Math.floor(whole / 60)).padStart(2, '0')}:${String(whole % 60).padStart(2, '0')}`
   return precise ? `${clock}.${String(Math.max(0, Math.floor((seconds - whole) * 100))).padStart(2, '0')}` : clock
 }
-const contains = (items: Segment[], time: number) => items.some((item) => time >= item.start && time < item.end)
 const Waveform = memo(function Waveform({ data, start, end, left, width, viewport, scroll }: { data?: WaveformData; start: number; end: number; left: number; width: number; viewport: number; scroll: number }) {
   const ref = useRef<HTMLCanvasElement>(null)
   const inset = Math.max(0, scroll - left), visible = Math.max(0, Math.min(width - inset, scroll + viewport - left - inset))
@@ -44,8 +42,10 @@ const Waveform = memo(function Waveform({ data, start, end, left, width, viewpor
 
 export default function App() {
   const [media, setMedia] = useState<MediaItem[]>([])
-  const [edit, setEdit] = useState<Edit>({ video: [], audio: [], audioOffset: 0 })
+  const [edit, setEdit] = useState<Edit>({ video: [], audio: [] })
   const [selectedTrack, setSelectedTrack] = useState<Track>('video')
+  const [selection, setSelection] = useState<string[]>([])
+  const [dragDuration, setDragDuration] = useState<number | null>(null)
   const [selectedIds, setSelectedIds] = useState<Record<Track, string | null>>({ video: null, audio: null })
   const [undoStack, setUndoStack] = useState<Snapshot[]>([])
   const [redoStack, setRedoStack] = useState<Snapshot[]>([])
@@ -83,22 +83,27 @@ export default function App() {
   const importLockRef = useRef(false)
   const dragDepthRef = useRef(0)
   const scrubbingRef = useRef(false)
-  const audioDragRef = useRef<{ x: number; offset: number; moved: boolean; secondsPerPixel: number } | null>(null)
+  const clipDragRef = useRef<{ x: number; scroll: number; base: Edit; ids: string[]; moved: boolean; secondsPerPixel: number } | null>(null)
+  const playerClipRef = useRef({ video: '', audio: '' })
   const trimDragRef = useRef<{ track: Track; id: string; edge: 'start' | 'end'; moved: boolean } | null>(null)
   const resizingRef = useRef<{ kind: 'sidebar' | 'timeline'; initial: number; x: number; y: number } | null>(null)
   const video = media.find((item) => item.kind === 'video')
   const audio = media.find((item) => item.kind === 'audio')
   const videoDuration = video?.metadata.duration || 0
   const audioDuration = audio?.metadata.duration || 0
-  const timelineDuration = Math.max(videoDuration, audio ? audioDuration + edit.audioOffset : 0, 1)
+  const projectDuration = timelineEnd(edit)
+  const timelineDuration = dragDuration ?? Math.max(videoDuration, audioDuration, projectDuration, 1)
   const fps = video?.metadata.video?.fps || 29.97
   const frame = 1 / fps
   const currentSegments = edit[selectedTrack]
-  const selectedSegment = currentSegments.find((item) => item.id === selectedIds[selectedTrack]) || currentSegments[0]
-  const selectedOffset = selectedTrack === 'audio' ? edit.audioOffset : 0
-  const canSplit = currentSegments.some((item) => position - selectedOffset > item.start + frame / 2 && position - selectedOffset < item.end - frame / 2)
+  const selectedSegment = currentSegments.find((item) => item.id === selectedIds[selectedTrack] && selection.includes(item.id)) || currentSegments.find((item) => selection.includes(item.id))
+  const selectedOffset = selectedSegment ? selectedSegment.at - selectedSegment.start : 0
+  const selectedClips = [...edit.video, ...edit.audio].filter((c) => selection.includes(c.id))
+  const canSplit = selectedClips.some((item) => position > item.at + frame / 2 && position < endAt(item) - frame / 2)
+  const canUnlink = selectedClips.some((c) => c.linkId)
+  const canLink = selectedClips.length > 1 && (!selectedClips[0].linkId || selectedClips.some((c) => c.linkId !== selectedClips[0].linkId))
   const rulerTicks = Math.min(240, Math.max(7, Math.round(7 * zoom / 100)))
-  const pictureVisible = !!video && !videoHidden && contains(edit.video, position)
+  const pictureVisible = !!video && !videoHidden && !!activeClip(edit.video, position)
 
   useEffect(() => { if (selectedSegment) setTrimDraft({ start: selectedSegment.start.toFixed(3), end: selectedSegment.end.toFixed(3) }) }, [selectedTrack, selectedSegment?.id, selectedSegment?.start, selectedSegment?.end])
   const snapshot: Snapshot = { media, edit, videoMuted, audioMuted, videoHidden }
@@ -107,8 +112,8 @@ export default function App() {
   const title = projectPath?.split(/[\\/]/).pop()?.replace(/\.mkproj$/i, '') || 'Untitled Wedding'
   const restore = (state: Snapshot) => {
     setPlaying(false); setMedia(state.media); setEdit(state.edit); setVideoMuted(state.videoMuted); setAudioMuted(state.audioMuted); setVideoHidden(state.videoHidden)
-    setSelectedIds({ video: null, audio: null })
-    const nextDuration = Math.max(state.media.find((m) => m.kind === 'video')?.metadata.duration || 0, (state.media.find((m) => m.kind === 'audio')?.metadata.duration || 0) + state.edit.audioOffset, 1)
+    setSelectedIds({ video: null, audio: null }); setSelection([]); setDragDuration(null); clipDragRef.current = null
+    const nextDuration = Math.max(timelineEnd(state.edit), 1)
     const nextPosition = Math.min(positionRef.current, nextDuration)
     positionRef.current = nextPosition; setPosition(nextPosition); clockRef.current = { time: nextPosition, now: performance.now() }
   }
@@ -135,7 +140,7 @@ export default function App() {
   }, [])
   const saveProject = async (saveAs = false) => {
     if (!window.magicKey) return false
-    const project: ProjectData = { format: 'magic-keyframe-project', version: 1, media: media.map(({ id, kind, path }) => ({ id, kind, path })), edit, tracks: { videoMuted, audioMuted, videoHidden }, view: { position: positionRef.current, zoom, timelineHeight, sidebarWidth } }
+    const project: ProjectData = { format: 'magic-keyframe-project', version: 2, media: media.map(({ id, kind, path }) => ({ id, kind, path })), edit, tracks: { videoMuted, audioMuted, videoHidden }, view: { position: positionRef.current, zoom, timelineHeight, sidebarWidth } }
     const path = await window.magicKey.saveProject(project, saveAs ? undefined : projectPath)
     if (!path) return false
     setProjectPath(path); setSavedFingerprint(contentFingerprint); setNotice({ kind: 'success', message: `Project saved: ${path}` }); return true
@@ -148,6 +153,16 @@ export default function App() {
   const projectCommand = async (command: string, path?: string) => {
     if (projectLockRef.current || importLockRef.current || importing || exporting) {
       if (command === 'open' || command === 'close') pendingCommandRef.current = { command, path }
+      return
+    }
+    if (['link', 'unlink', 'split', 'remove', 'selectAll'].includes(command)) {
+      const active = document.activeElement
+      if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) { if (command === 'selectAll') active.select(); return }
+      if (command === 'selectAll') setSelection([...edit.video, ...edit.audio].map((c) => c.id))
+      else if (command === 'link') changeLinks(false)
+      else if (command === 'unlink') changeLinks(true)
+      else if (command === 'split') splitAtPlayhead()
+      else removeSelected()
       return
     }
     if (command === 'undo' || command === 'redo') {
@@ -168,7 +183,7 @@ export default function App() {
         const state: Snapshot = { media: result.media, edit: result.project.edit, ...result.project.tracks }
         restore(state); setProjectPath(result.path); setSavedFingerprint(result.relinked ? 'relinked-media-needs-saving' : fingerprint(state))
         const view = result.project.view
-        const duration = Math.max(result.media.find((m) => m.kind === 'video')?.metadata.duration || 0, (result.media.find((m) => m.kind === 'audio')?.metadata.duration || 0) + state.edit.audioOffset, 1)
+        const duration = Math.max(result.media.find((m) => m.kind === 'video')?.metadata.duration || 0, result.media.find((m) => m.kind === 'audio')?.metadata.duration || 0, timelineEnd(state.edit), 1)
         const loadedPosition = Math.min(view.position, duration)
         setPosition(loadedPosition); positionRef.current = loadedPosition; resumeAfterProxyRef.current = loadedPosition
         setZoom(view.zoom); setTimelineHeight(Math.max(220, Math.min(window.innerHeight - 300, view.timelineHeight))); setSidebarWidth(view.sidebarWidth)
@@ -188,9 +203,12 @@ export default function App() {
   useEffect(() => window.magicKey?.onCommand((command, path) => commandRef.current(command, path)), [])
   useEffect(() => {
     const keys = (event: KeyboardEvent) => {
+      if ((event.target as HTMLElement).closest('input, textarea, [contenteditable="true"]')) return
+      if (event.key === 'Escape') { setSelection([]); return }
+      if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); commandRef.current('remove'); return }
       if (!(event.ctrlKey || event.metaKey) || window.magicKey?.onCommand) return
       const key = event.key.toLowerCase()
-      const command = key === 's' ? event.shiftKey ? 'saveAs' : 'save' : key === 'o' ? 'open' : key === 'n' ? 'new' : key === 'z' ? event.shiftKey ? 'redo' : 'undo' : key === 'y' ? 'redo' : null
+      const command = key === 's' ? event.shiftKey ? 'saveAs' : 'save' : key === 'o' ? 'open' : key === 'n' ? 'new' : key === 'z' ? event.shiftKey ? 'redo' : 'undo' : key === 'y' ? 'redo' : key === 'l' ? event.shiftKey ? 'unlink' : 'link' : key === 'a' ? 'selectAll' : key === 'b' ? 'split' : null
       if (command) { event.preventDefault(); commandRef.current(command) }
     }
     window.addEventListener('keydown', keys); return () => window.removeEventListener('keydown', keys)
@@ -201,22 +219,18 @@ export default function App() {
     void player.play().catch(() => {}).finally(() => pendingPlayRef.current.delete(player))
   }
   const syncPlayers = (time: number, play: boolean, force = false) => {
-    const camera = videoRef.current
-    if (camera && video) {
-      camera.muted = videoMuted
-      if (time < videoDuration && contains(edit.video, time)) {
-        if (force || Math.abs(camera.currentTime - time) > .15) camera.currentTime = Math.max(0, time)
-        if (play) safePlay(camera); else camera.pause()
-      } else camera.pause()
-    }
-    const recorder = audioRef.current
-    if (recorder && audio) {
-      const wanted = time - edit.audioOffset
-      recorder.muted = audioMuted || !contains(edit.audio, wanted)
-      if (wanted >= 0 && wanted < audioDuration) {
-        if (force || Math.abs(recorder.currentTime - wanted) > .12) recorder.currentTime = wanted
-        if (play) safePlay(recorder); else recorder.pause()
-      } else recorder.pause()
+    for (const track of ['video', 'audio'] as const) {
+      const player = track === 'video' ? videoRef.current : audioRef.current
+      const source = track === 'video' ? video : audio
+      if (!player || !source) continue
+      const clip = activeClip(edit[track], time)
+      player.muted = (track === 'video' ? videoMuted : audioMuted) || !clip
+      if (clip) {
+        const wanted = clip.start + time - clip.at
+        if (force || playerClipRef.current[track] !== clip.id || Math.abs(player.currentTime - wanted) > .12) player.currentTime = Math.max(0, wanted)
+        playerClipRef.current[track] = clip.id
+        if (play) safePlay(player); else player.pause()
+      } else { player.pause(); playerClipRef.current[track] = '' }
     }
   }
   const seekTo = (time: number) => {
@@ -228,12 +242,7 @@ export default function App() {
     if (!playing) { syncPlayers(positionRef.current, false, true); return }
     let request = 0, lastPaint = 0
     const tick = (now: number) => {
-      let time = clockRef.current.time + (now - clockRef.current.now) / 1000
-      const videoEnd = edit.video.at(-1)?.end || 0
-      if (video && time < videoEnd && !contains(edit.video, time)) {
-        const next = edit.video.find((item) => item.start > time)
-        if (next) { time = next.start; clockRef.current = { time, now } }
-      }
+      const time = clockRef.current.time + (now - clockRef.current.now) / 1000
       if (time >= playbackEndRef.current) {
         positionRef.current = playbackEndRef.current; setPosition(playbackEndRef.current); setPlaying(false)
         videoRef.current?.pause(); audioRef.current?.pause(); return
@@ -249,11 +258,10 @@ export default function App() {
   const togglePlayback = () => {
     if (playing) { seekTo(positionRef.current); setPlaying(false); return }
     if (!media.length) return
-    const videoEnd = edit.video.at(-1)?.end || 0
+    if (projectDuration <= 0) return
     let start = positionRef.current
-    if (video && start >= videoEnd - frame && selectedTrack !== 'audio') start = edit.video[0]?.start || 0
-    else if (start >= timelineDuration - frame) start = 0
-    playbackEndRef.current = video && start < videoEnd ? videoEnd : timelineDuration
+    if (start >= projectDuration - frame) start = 0
+    playbackEndRef.current = projectDuration
     seekTo(start); syncPlayers(start, true, true); setPlaying(true)
   }
   const importMedia = async (paths?: string[]) => {
@@ -272,15 +280,17 @@ export default function App() {
       }
       if (picked.length && !accepted.length) { setNotice({ kind: 'error', message: 'This test build uses one video and one external audio file. Those tracks are already loaded.' }); return }
       if (!accepted.length) return
-      recordHistory(); setMedia((items) => [...items, ...accepted])
+      setPlaying(false); recordHistory(); setMedia((items) => [...items, ...accepted])
       let nextEdit = edit
       for (const item of accepted) {
-        const segment = { id: crypto.randomUUID(), start: 0, end: item.metadata.duration }
+        const segment = { id: crypto.randomUUID(), start: 0, end: item.metadata.duration, at: 0 }
         nextEdit = { ...nextEdit, [item.kind]: [segment] }
-        setSelectedIds((ids) => ({ ...ids, [item.kind]: segment.id }))
+        setSelectedIds((ids) => ({ ...ids, [item.kind]: segment.id })); setSelection([segment.id])
         if (item.kind === 'audio') setVideoMuted(true)
       }
       setEdit(nextEdit)
+      const preferred = accepted.find((item) => item.kind === 'video') || accepted[0]
+      if (preferred) { setSelectedTrack(preferred.kind); setSelection(nextEdit[preferred.kind].map((c) => c.id)) }
       if (!video && accepted.some((item) => item.kind === 'video')) { setSelectedTrack('video'); setZoom(100) }
       else if (!video && accepted.length) setSelectedTrack('audio')
       if (accepted.length < picked.length && accepted.length) setNotice({ kind: 'success', message: 'Imported the available tracks. Extra/duplicate files were skipped; this build uses one video and one external audio file.' })
@@ -300,63 +310,81 @@ export default function App() {
     if (!video || !window.magicKey || !edit.video.length) return
     setExporting(true); setNotice(null)
     try {
-      const result = await window.magicKey.exportVideo({ videoPath: video.path, audioPath: audio?.path, segments: edit.video, audioSegments: edit.audio, audioOffset: edit.audioOffset, videoMuted, audioMuted, videoHidden })
+      const result = await window.magicKey.exportVideo({ videoPath: video.path, audioPath: audio?.path, segments: edit.video, audioSegments: edit.audio, videoMuted, audioMuted, videoHidden })
       if (result.path) setNotice({ kind: 'success', message: `Export saved: ${result.path}` })
     } catch (error) { setNotice({ kind: 'error', message: `Export failed: ${String(error)}` }) }
     finally { setExporting(false) }
   }
   const splitAtPlayhead = () => {
-    const at = Math.round((position - selectedOffset) * fps) / fps
-    const index = currentSegments.findIndex((item) => at > item.start + frame / 2 && at < item.end - frame / 2)
-    if (index < 0) return
-    const original = currentSegments[index], right = { id: crypto.randomUUID(), start: at, end: original.end }
-    recordHistory(); setEdit({ ...edit, [selectedTrack]: [...currentSegments.slice(0, index), { ...original, end: at }, right, ...currentSegments.slice(index + 1)] })
-    setSelectedIds((ids) => ({ ...ids, [selectedTrack]: right.id }))
+    const result = splitClips(edit, selection, Math.round(position * fps) / fps, frame / 2)
+    if (result.edit === edit) return
+    setPlaying(false); recordHistory(); setEdit(result.edit); setSelection(result.selection)
   }
   const removeSelected = () => {
-    if (!selectedSegment || (selectedTrack === 'video' && currentSegments.length < 2)) return
-    recordHistory(); setEdit({ ...edit, [selectedTrack]: currentSegments.filter((item) => item.id !== selectedSegment.id) })
-    setSelectedIds((ids) => ({ ...ids, [selectedTrack]: null }))
+    if (!selection.length) return
+    setPlaying(false); recordHistory(); setEdit(removeClips(edit, selection)); setSelection([])
   }
-  const edgeLimit = (items: Segment[], index: number, edge: 'start' | 'end', value: number, track: Track) => edge === 'start'
-    ? Math.min(items[index].end - frame, Math.max(index ? items[index - 1].end : 0, value))
-    : Math.max(items[index].start + frame, Math.min(index < items.length - 1 ? items[index + 1].start : track === 'video' ? videoDuration : audioDuration, value))
+  const changeLinks = (unlink: boolean) => {
+    if (unlink ? !canUnlink : !canLink) return
+    recordHistory(); setEdit(unlink ? unlinkClips(edit, selection) : linkClips(edit, selection))
+  }
+  const nudgeSelection = (delta: number) => {
+    const result = moveClips(edit, selection, delta)
+    if (!result.delta) return
+    setPlaying(false); recordHistory(); setEdit(result.edit)
+  }
   const commitTrimInput = (edge: 'start' | 'end') => {
     if (!selectedSegment) return
-    const value = Number(trimDraft[edge]), index = currentSegments.findIndex((item) => item.id === selectedSegment.id)
+    const value = Number(trimDraft[edge])
     if (!Number.isFinite(value)) return
-    const next = edgeLimit(currentSegments, index, edge, Math.round(value * fps) / fps, selectedTrack)
-    if (Math.abs(next - selectedSegment[edge]) < frame / 2) { setTrimDraft({ start: selectedSegment.start.toFixed(3), end: selectedSegment.end.toFixed(3) }); return }
-    recordHistory(); setEdit({ ...edit, [selectedTrack]: currentSegments.map((item) => item.id === selectedSegment.id ? { ...item, [edge]: next } : item) })
+    const next = trimClip(edit, selectedSegment.id, edge, Math.round(value * fps) / fps, selectedTrack === 'video' ? videoDuration : audioDuration, frame)
+    if (JSON.stringify(next) === JSON.stringify(edit)) { setTrimDraft({ start: selectedSegment.start.toFixed(3), end: selectedSegment.end.toFixed(3) }); return }
+    setPlaying(false); recordHistory(); setEdit(next)
   }
   const timelinePoint = (x: number) => { const bounds = tracksRef.current!.getBoundingClientRect(); return Math.max(0, Math.min(timelineDuration, (x - bounds.left) / bounds.width * timelineDuration)) }
   const beginScrub = (event: React.PointerEvent) => {
+    if (event.button !== 0) return
+    event.preventDefault()
     const clip = (event.target as Element).closest<HTMLElement>('[data-segment-id]')
-    if (clip) { const track = clip.dataset.track as Track; setSelectedTrack(track); setSelectedIds((ids) => ({ ...ids, [track]: clip.dataset.segmentId! })); return }
+    if (clip) return
     event.currentTarget.setPointerCapture(event.pointerId); scrubbingRef.current = true; seekTo(Math.round(timelinePoint(event.clientX) * fps) / fps)
   }
   const moveScrub = (event: React.PointerEvent) => { if (scrubbingRef.current) seekTo(Math.round(timelinePoint(event.clientX) * fps) / fps) }
   const beginTrim = (event: React.PointerEvent, track: Track, id: string, edge: 'start' | 'end') => {
-    event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); setSelectedTrack(track); setSelectedIds((ids) => ({ ...ids, [track]: id })); trimDragRef.current = { track, id, edge, moved: false }
+    event.preventDefault(); event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); setSelectedTrack(track); setSelectedIds((ids) => ({ ...ids, [track]: id })); setSelection(linkedSelection(edit, [id])); trimDragRef.current = { track, id, edge, moved: false }
   }
   const moveTrim = (event: React.PointerEvent) => {
     event.stopPropagation(); const drag = trimDragRef.current; if (!drag) return
-    const value = Math.round((timelinePoint(event.clientX) - (drag.track === 'audio' ? edit.audioOffset : 0)) * fps) / fps
-    const index = edit[drag.track].findIndex((item) => item.id === drag.id)
-    if (index < 0 || Math.abs(edgeLimit(edit[drag.track], index, drag.edge, value, drag.track) - edit[drag.track][index][drag.edge]) < .00001) return
-    if (!drag.moved) { recordHistory(); drag.moved = true }
-    setEdit((current) => { const items = current[drag.track], index = items.findIndex((item) => item.id === drag.id); return index < 0 ? current : { ...current, [drag.track]: items.map((item, at) => at === index ? { ...item, [drag.edge]: edgeLimit(items, index, drag.edge, value, drag.track) } : item) } })
+    const clip = edit[drag.track].find((c) => c.id === drag.id); if (!clip) return
+    const value = clip.start + Math.round((timelinePoint(event.clientX) - clip.at) * fps) / fps
+    const next = trimClip(edit, drag.id, drag.edge, value, drag.track === 'video' ? videoDuration : audioDuration, frame)
+    if (JSON.stringify(next) === JSON.stringify(edit)) return
+    if (!drag.moved) { setPlaying(false); recordHistory(); drag.moved = true }
+    setEdit(next)
   }
-  const beginAudioDrag = (event: React.PointerEvent, id: string) => {
-    event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); setSelectedTrack('audio'); setSelectedIds((ids) => ({ ...ids, audio: id })); audioDragRef.current = { x: event.clientX, offset: edit.audioOffset, moved: false, secondsPerPixel: timelineDuration / tracksRef.current!.clientWidth }
+  const beginClipDrag = (event: React.PointerEvent, track: Track, id: string) => {
+    if (event.button !== 0) return
+    event.preventDefault(); event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId)
+    setSelectedTrack(track); setSelectedIds((ids) => ({ ...ids, [track]: id }))
+    const group = linkedSelection(edit, [id])
+    const additive = event.ctrlKey || event.metaKey || event.shiftKey
+    const next = additive ? selection.includes(id) ? selection.filter((chosen) => !group.includes(chosen)) : linkedSelection(edit, [...selection, ...group]) : selection.includes(id) ? linkedSelection(edit, selection) : group
+    setSelection(next)
+    if (!next.includes(id)) return
+    setDragDuration(timelineDuration)
+    clipDragRef.current = { x: event.clientX, scroll: trackViewportRef.current?.scrollLeft || 0, base: edit, ids: next, moved: false, secondsPerPixel: timelineDuration / tracksRef.current!.clientWidth }
   }
-  const moveAudioDrag = (event: React.PointerEvent) => {
-    event.stopPropagation(); const drag = audioDragRef.current; if (!drag || !tracksRef.current) return
-    if (!drag.moved && Math.abs(event.clientX - drag.x) < 3) return
-    if (!drag.moved) { recordHistory(); drag.moved = true }
-    const offset = drag.offset + (event.clientX - drag.x) * drag.secondsPerPixel
-    setEdit((current) => ({ ...current, audioOffset: offset }))
+  const moveClipDrag = (event: React.PointerEvent) => {
+    event.stopPropagation(); const drag = clipDragRef.current; if (!drag) return
+    const pixels = event.clientX - drag.x + (trackViewportRef.current?.scrollLeft || 0) - drag.scroll
+    if (!drag.moved && Math.abs(pixels) < 3) return
+    const delta = Math.round(pixels * drag.secondsPerPixel * fps) / fps
+    const result = moveClips(drag.base, drag.ids, delta, event.altKey ? 0 : 8 * drag.secondsPerPixel, positionRef.current)
+    if (!drag.moved && !result.delta) return
+    if (!drag.moved) { setPlaying(false); recordHistory(); drag.moved = true }
+    setEdit(result.edit)
   }
+  const endClipDrag = () => { clipDragRef.current = null; setDragDuration(null) }
   const changeZoom = (value: number) => { setZoom(value); requestAnimationFrame(() => { if (trackViewportRef.current && tracksRef.current) trackViewportRef.current.scrollLeft = position / timelineDuration * tracksRef.current.clientWidth - trackViewportRef.current.clientWidth / 2 }) }
   const beginResize = (event: React.PointerEvent, kind: 'sidebar' | 'timeline') => { event.currentTarget.setPointerCapture(event.pointerId); resizingRef.current = { kind, initial: kind === 'sidebar' ? sidebarWidth : timelineHeight, x: event.clientX, y: event.clientY } }
   const moveResize = (event: React.PointerEvent) => { const drag = resizingRef.current; if (!drag) return; if (drag.kind === 'sidebar') setSidebarWidth(Math.max(220, Math.min(560, drag.initial + event.clientX - drag.x))); else setTimelineHeight(Math.max(220, Math.min(window.innerHeight - 300, drag.initial + drag.y - event.clientY))) }
@@ -365,6 +393,7 @@ export default function App() {
     const wheel = (event: WheelEvent) => {
       if (Math.abs(event.deltaX) > Math.abs(event.deltaY) || event.shiftKey) return
       event.preventDefault()
+      if (clipDragRef.current || trimDragRef.current) return
       const bounds = node.getBoundingClientRect(), anchor = Math.max(0, Math.min(node.clientWidth, event.clientX - bounds.left))
       const fraction = (node.scrollLeft + anchor) / (node.clientWidth * zoom / 100)
       const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? node.clientHeight : 1)
@@ -374,14 +403,19 @@ export default function App() {
     }
     surface.addEventListener('wheel', wheel as EventListener, { passive: false }); return () => surface.removeEventListener('wheel', wheel as EventListener)
   }, [zoom])
-  const selectTrack = (track: Track) => setSelectedTrack(track)
+  const selectTrack = (track: Track) => {
+    setSelectedTrack(track)
+    const clip = activeClip(edit[track], position) || edit[track][0]
+    setSelection(clip ? linkedSelection(edit, [clip.id]) : [])
+    setSelectedIds((ids) => ({ ...ids, [track]: clip?.id || null }))
+  }
   const renderClip = (track: Track, segment: Segment) => {
     const item = track === 'video' ? video : audio; if (!item) return null
-    const offset = track === 'audio' ? edit.audioOffset : 0
-    return <div key={segment.id} data-track={track} data-segment-id={segment.id} className={`clip ${track}-clip ${track === 'audio' ? 'draggable' : ''} ${selectedTrack === track && selectedSegment?.id === segment.id ? 'selected' : ''}`} style={{ left: `${(segment.start + offset) / timelineDuration * 100}%`, width: `${(segment.end - segment.start) / timelineDuration * 100}%` }} onPointerDown={track === 'audio' ? (event) => beginAudioDrag(event, segment.id) : undefined} onPointerMove={track === 'audio' ? moveAudioDrag : undefined} onPointerUp={track === 'audio' ? () => { audioDragRef.current = null } : undefined} onPointerCancel={() => { audioDragRef.current = null }}>
+
+    return <div key={segment.id} data-track={track} data-segment-id={segment.id} className={`clip ${track}-clip draggable ${segment.linkId ? 'linked-clip' : ''} ${selection.includes(segment.id) ? 'selected' : ''}`} style={{ left: `${segment.at / timelineDuration * 100}%`, width: `${(segment.end - segment.start) / timelineDuration * 100}%` }} onPointerDown={(event) => beginClipDrag(event, track, segment.id)} onPointerMove={moveClipDrag} onPointerUp={endClipDrag} onPointerCancel={endClipDrag}>
       <span className="trim-handle left" title="Drag to trim start" onPointerDown={(event) => beginTrim(event, track, segment.id, 'start')} onPointerMove={moveTrim} onPointerUp={() => { trimDragRef.current = null }} onPointerCancel={() => { trimDragRef.current = null }} />
-      <Waveform data={item.waveform} start={segment.start} end={segment.end} left={(segment.start + offset) / timelineDuration * viewport.width * zoom / 100} width={(segment.end - segment.start) / timelineDuration * viewport.width * zoom / 100} viewport={viewport.width} scroll={viewport.scroll} />
-      <div className="clip-title"><strong>{item.name}</strong><small>{formatTime(segment.start)} → {formatTime(segment.end)}</small></div>
+      <Waveform data={item.waveform} start={segment.start} end={segment.end} left={segment.at / timelineDuration * viewport.width * zoom / 100} width={(segment.end - segment.start) / timelineDuration * viewport.width * zoom / 100} viewport={viewport.width} scroll={viewport.scroll} />
+      <div className="clip-title"><strong>{segment.linkId && <Link2 size={11} className="link-badge" />}{item.name}</strong><small>{formatTime(segment.start)} → {formatTime(segment.end)}</small></div>
       <span className="trim-handle right" title="Drag to trim end" onPointerDown={(event) => beginTrim(event, track, segment.id, 'end')} onPointerMove={moveTrim} onPointerUp={() => { trimDragRef.current = null }} onPointerCancel={() => { trimDragRef.current = null }} />
     </div>
   }
@@ -393,9 +427,9 @@ export default function App() {
     {dropping && <div className="drop-overlay"><FolderOpen size={42} /><strong>Drop media to import</strong><span>Local video or audio files · originals stay untouched</span></div>}
     <header className="topbar"><div className="brand"><span className="brand-mark"><KeyRound size={18} /></span><span>Magic Keyframe</span></div><div className="project-title"><span className="status-dot" /> {dirty ? '● ' : ''}{title}</div><div className="top-actions"><button className="icon-button" title="New project (Ctrl+N)" onClick={() => commandRef.current('new')}><FilePlus2 size={17} /></button><button className="icon-button" title="Open project (Ctrl+O)" onClick={() => commandRef.current('open')}><FolderOpen size={17} /></button><button className="icon-button" title="Save project (Ctrl+S); Save as: Ctrl+Shift+S" onClick={() => commandRef.current('save')}><Save size={17} /></button><button className="icon-button" title="Undo edit" onClick={undo} disabled={!undoStack.length}><Undo2 size={17} /></button><button className="icon-button" title="Redo edit" onClick={redo} disabled={!redoStack.length}><Redo2 size={17} /></button><button className="button primary" onClick={handleExport} disabled={!video || !edit.video.length || exporting}><Download size={16} />{exporting ? 'Exporting…' : 'Export'}</button></div></header>
     <section className="workspace"><aside className="media-panel panel"><div className="panel-heading"><div><span className="eyebrow">PROJECT</span><h2>Media</h2></div><button className="icon-button" onClick={() => void importMedia()} disabled={importing}><Plus size={18} /></button></div><button className="import-card" onClick={() => void importMedia()} disabled={importing}><span><FolderOpen size={21} /></span><strong>{importing ? 'Analysing media…' : 'Import footage'}</strong><small>Click or drop video and audio here</small></button><div className="media-list">{!media.length && <div className="empty-media"><Clapperboard size={25} /><p>Drop footage anywhere in the window.</p><small>Start with the camera video and matching recorder audio.</small></div>}{media.map((item) => <div className="media-item" key={item.id}><span className={`media-icon ${item.kind}`}>{item.thumbnail ? <img src={item.thumbnail} alt={`${item.kind === 'video' ? 'Frame' : 'Waveform'} preview of ${item.name}`} /> : item.kind === 'video' ? <Video size={16} /> : <AudioLines size={16} />}</span><span className="media-copy"><strong>{item.name}</strong><small>{item.metadata.video ? `${item.metadata.video.width}×${item.metadata.video.height} · ${item.metadata.video.fps?.toFixed(2)} fps` : `${(item.metadata.audio?.sampleRate || 0) / 1000} kHz · ${item.metadata.audio?.channels === 1 ? 'Mono' : 'Stereo'}`}</small></span></div>)}</div><div className="assistant-card"><WandSparkles size={18} /><div><strong>Track monitoring</strong><small>Mute each source independently to compare sync.</small></div></div></aside>
-      <section className="viewer-panel panel"><div className="viewer-heading"><span>Preview</span><span className="quality-pill">{proxying ? 'BUILDING PROXY…' : proxyUrl ? 'PROXY · 1080P' : 'ORIGINAL'}<ChevronDown size={12} /></span></div>{notice && <div className={`status-banner ${notice.kind}`}><span>{notice.message}</span><button title="Dismiss message" onClick={() => setNotice(null)}>×</button></div>}<div className="viewer">{video ? <><video ref={videoRef} src={proxyUrl || video.url} style={{ visibility: pictureVisible ? 'visible' : 'hidden' }} muted={videoMuted} onLoadedMetadata={() => { syncPlayers(resumeAfterProxyRef.current ?? positionRef.current, playing, true); resumeAfterProxyRef.current = null }} />{!pictureVisible && <div className="hidden-video-notice"><EyeOff size={24} /><span>{videoHidden ? 'Video 1 hidden' : 'No video at this position'}</span></div>}</> : <div className="viewer-empty"><span className="glow"><Sparkles size={30} /></span><h1>{audio ? 'Audio is ready to edit' : 'Your story starts here'}</h1><p>{audio ? 'Select Audio 1 to trim, split, or remove sections.' : 'Import or drop your footage to begin.'}</p><button className="button primary" onClick={() => void importMedia()}><Plus size={16} /> Add media</button></div>}<audio ref={audioRef} src={audio?.url} onLoadedMetadata={() => syncPlayers(positionRef.current, playing, true)} muted={audioMuted || !contains(edit.audio, position - edit.audioOffset)} /></div><div className="transport"><span className="timecode">{formatTime(position, true)}<em> / {formatTime(timelineDuration, true)}</em></span><div className="transport-controls"><button title="Previous cut" onClick={() => seekTo(([...currentSegments].reverse().find((item) => item.start + selectedOffset < position - frame)?.start || 0) + selectedOffset)}><SkipBack size={18} /></button><button className="play-button" onClick={togglePlayback}>{playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}</button><button title="Next cut" onClick={() => seekTo((currentSegments.find((item) => item.start + selectedOffset > position + frame)?.start ?? currentSegments.at(-1)?.end ?? 0) + selectedOffset)}><SkipForward size={18} /></button></div><div className="volume"><Volume2 size={17} /><span><i /></span></div></div></section>
+      <section className="viewer-panel panel"><div className="viewer-heading"><span>Preview</span><span className="quality-pill">{proxying ? 'BUILDING PROXY…' : proxyUrl ? 'PROXY · 1080P' : 'ORIGINAL'}<ChevronDown size={12} /></span></div>{notice && <div className={`status-banner ${notice.kind}`}><span>{notice.message}</span><button title="Dismiss message" onClick={() => setNotice(null)}>×</button></div>}<div className="viewer">{video ? <><video ref={videoRef} src={proxyUrl || video.url} style={{ visibility: pictureVisible ? 'visible' : 'hidden' }} muted={videoMuted} onLoadedMetadata={() => { syncPlayers(resumeAfterProxyRef.current ?? positionRef.current, playing, true); resumeAfterProxyRef.current = null }} />{!pictureVisible && <div className="hidden-video-notice"><EyeOff size={24} /><span>{videoHidden ? 'Video 1 hidden' : 'No video at this position'}</span></div>}</> : <div className="viewer-empty"><span className="glow"><Sparkles size={30} /></span><h1>{audio ? 'Audio is ready to edit' : 'Your story starts here'}</h1><p>{audio ? 'Select Audio 1 to trim, split, or remove sections.' : 'Import or drop your footage to begin.'}</p><button className="button primary" onClick={() => void importMedia()}><Plus size={16} /> Add media</button></div>}<audio ref={audioRef} src={audio?.url} onLoadedMetadata={() => syncPlayers(positionRef.current, playing, true)} muted={audioMuted || !activeClip(edit.audio, position)} /></div><div className="transport"><span className="timecode">{formatTime(position, true)}<em> / {formatTime(projectDuration, true)}</em></span><div className="transport-controls"><button title="Previous cut" onClick={() => seekTo([...ordered(currentSegments)].reverse().find((item) => item.at < position - frame)?.at || 0)}><SkipBack size={18} /></button><button className="play-button" onClick={togglePlayback}>{playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}</button><button title="Next cut" onClick={() => seekTo(ordered(currentSegments).find((item) => item.at > position + frame)?.at ?? projectDuration)}><SkipForward size={18} /></button></div><div className="volume"><Volume2 size={17} /><span><i /></span></div></div></section>
       <div className="sidebar-resizer" title="Drag to resize media panel" onPointerDown={(event) => beginResize(event, 'sidebar')} onPointerMove={moveResize} onPointerUp={() => { resizingRef.current = null }} onPointerCancel={() => { resizingRef.current = null }} /></section>
-    <section className="timeline-panel panel"><div className="timeline-resizer" title="Drag to resize timeline" onPointerDown={(event) => beginResize(event, 'timeline')} onPointerMove={moveResize} onPointerUp={() => { resizingRef.current = null }} onPointerCancel={() => { resizingRef.current = null }} /><div className="timeline-tools"><div className="tool-group"><span className={`tool active ${selectedTrack === 'audio' ? 'audio-selection' : ''}`}><Layers3 size={16} />{selectedTrack === 'video' ? 'Video 1' : 'Audio 1'}</span><button className="tool" title="Split selected track at the playhead" onClick={splitAtPlayhead} disabled={!canSplit}><Scissors size={16} /> Split</button><button className="tool remove-tool" title="Remove selected section; audio gaps stay silent" onClick={removeSelected} disabled={!selectedSegment || (selectedTrack === 'video' && currentSegments.length < 2)}><Trash2 size={15} /> Remove</button></div><div className="edit-controls"><div className="align-controls"><button onClick={() => { recordHistory(); setEdit({ ...edit, audioOffset: edit.audioOffset - frame }) }} disabled={!audio}>−1 frame</button><span>{edit.audioOffset >= 0 ? '+' : ''}{edit.audioOffset.toFixed(3)}s</span><button onClick={() => { recordHistory(); setEdit({ ...edit, audioOffset: edit.audioOffset + frame }) }} disabled={!audio}>+1 frame</button></div><div className="trim-inputs">{(['start', 'end'] as const).map((edge) => <label key={edge}>{edge === 'start' ? 'IN' : 'OUT'}<input aria-label={`${edge === 'start' ? 'In' : 'Out'} point in source seconds`} type="number" step={frame} value={trimDraft[edge]} disabled={!selectedSegment} onChange={(event) => setTrimDraft((current) => ({ ...current, [edge]: event.target.value }))} onBlur={() => commitTrimInput(edge)} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }} /></label>)}</div></div><div className="zoom"><button title="Fit full timeline" onClick={() => changeZoom(100)}>Fit</button><ZoomOut size={16} /><input aria-label="Timeline zoom" type="range" min="100" max="4000" step="50" value={zoom} onChange={(event) => changeZoom(Number(event.target.value))} /><ZoomIn size={16} /><span>{Math.round(zoom / 100)}×</span></div></div>
-      <div className="timeline-scroll"><div className="track-labels"><div className="ruler-spacer" />{(['video', 'audio'] as const).map((track) => <div key={track} className={`track-header ${selectedTrack === track ? 'selected-track' : ''}`} onClick={() => selectTrack(track)}><button className="track-select" onClick={() => selectTrack(track)}>{track === 'video' ? <Video size={14} /> : <AudioLines size={14} />}<span>{track === 'video' ? 'VIDEO 1' : 'AUDIO 1'}</span></button><div className="track-switches"><button aria-label={`${track === 'video' ? videoMuted ? 'Unmute' : 'Mute' : audioMuted ? 'Unmute' : 'Mute'} ${track === 'video' ? 'Video 1' : 'Audio 1'}`} title="Mute affects preview and export" aria-pressed={track === 'video' ? videoMuted : audioMuted} className={(track === 'video' ? videoMuted : audioMuted) ? 'switch-off' : ''} disabled={track === 'video' ? !video : !audio} onClick={(event) => { event.stopPropagation(); setSelectedTrack(track); recordHistory(); if (track === 'video') setVideoMuted(!videoMuted); else setAudioMuted(!audioMuted) }}>{(track === 'video' ? videoMuted : audioMuted) ? <VolumeX size={14} /> : <Volume2 size={14} />}</button>{track === 'video' && <button aria-label={videoHidden ? 'Show Video 1' : 'Hide Video 1'} title="Video visibility affects preview and export; audio is separate" aria-pressed={videoHidden} className={videoHidden ? 'switch-off' : ''} disabled={!video} onClick={(event) => { event.stopPropagation(); setSelectedTrack('video'); recordHistory(); setVideoHidden(!videoHidden) }}>{videoHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button>}</div></div>)}</div><div className="track-viewport" ref={trackViewportRef}><div className="tracks" ref={tracksRef} style={{ width: `${zoom}%` }}><div className="ruler" onPointerDown={beginScrub} onPointerMove={moveScrub} onPointerUp={() => { scrubbingRef.current = false }} onPointerCancel={() => { scrubbingRef.current = false }}>{Array.from({ length: rulerTicks }, (_, i) => i / (rulerTicks - 1)).map((part) => <span key={part} style={{ left: `${part * 100}%` }}>{formatTime(part * timelineDuration)}<i /></span>)}</div><div className="playhead" style={{ left: `${Math.min(position / timelineDuration * 100, 100)}%` }}><i /></div>{(['video', 'audio'] as const).map((track) => <div key={track} data-track-row={track} className={`track ${track}-track ${track === 'video' ? videoHidden ? 'track-disabled' : '' : audioMuted ? 'track-disabled' : ''}`} onPointerDown={(event) => { setSelectedTrack(track); beginScrub(event) }} onPointerMove={moveScrub} onPointerUp={() => { scrubbingRef.current = false }} onPointerCancel={() => { scrubbingRef.current = false }}>{edit[track].map((segment) => renderClip(track, segment))}</div>)}</div></div><div className="timeline-help">Ruler/background: seek · Clips: select/drag without seeking · Wheel: zoom · Shift+wheel: scroll · Ctrl+S: save project</div></div></section>
+    <section className="timeline-panel panel"><div className="timeline-resizer" title="Drag to resize timeline" onPointerDown={(event) => beginResize(event, 'timeline')} onPointerMove={moveResize} onPointerUp={() => { resizingRef.current = null }} onPointerCancel={() => { resizingRef.current = null }} /><div className="timeline-tools"><div className="tool-group"><span className={`tool active ${selectedTrack === 'audio' ? 'audio-selection' : ''}`}><Layers3 size={16} />{selection.length > 1 ? `${selection.length} clips` : selectedTrack === 'video' ? 'Video 1' : 'Audio 1'}</span><button className="tool" title="Split selected clips and their linked partners at the playhead" onClick={splitAtPlayhead} disabled={!canSplit}><Scissors size={16} /> Split</button><button className="tool remove-tool" title="Remove selected clips and linked partners; gaps stay in place" onClick={removeSelected} disabled={!selection.length}><Trash2 size={15} /> Remove</button><button className="tool" title="Link selected clips to preserve sync when moving and splitting (Ctrl+L)" disabled={!canLink} onClick={() => changeLinks(false)}><Link2 size={15} /> Link</button><button className="tool" title="Unlink selected clips (Ctrl+Shift+L)" disabled={!canUnlink} onClick={() => changeLinks(true)}><Unlink2 size={15} /> Unlink</button></div><div className="edit-controls"><div className="align-controls" title="Nudge selected clips; the value is the active clip’s timeline offset from its source"><button onClick={() => nudgeSelection(-frame)} disabled={!selection.length}>−1 frame</button><span>{selectedOffset >= 0 ? '+' : ''}{selectedOffset.toFixed(3)}s</span><button onClick={() => nudgeSelection(frame)} disabled={!selection.length}>+1 frame</button></div><div className="trim-inputs">{(['start', 'end'] as const).map((edge) => <label key={edge}>{edge === 'start' ? 'IN' : 'OUT'}<input aria-label={`${edge === 'start' ? 'In' : 'Out'} point in source seconds`} type="number" step={frame} value={trimDraft[edge]} disabled={!selectedSegment} onChange={(event) => setTrimDraft((current) => ({ ...current, [edge]: event.target.value }))} onBlur={() => commitTrimInput(edge)} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }} /></label>)}</div></div><div className="zoom"><button title="Fit full timeline" onClick={() => changeZoom(100)}>Fit</button><ZoomOut size={16} /><input aria-label="Timeline zoom" type="range" min="100" max="4000" step="50" value={zoom} onChange={(event) => changeZoom(Number(event.target.value))} /><ZoomIn size={16} /><span>{Math.round(zoom / 100)}×</span></div></div>
+      <div className="timeline-scroll"><div className="track-labels"><div className="ruler-spacer" />{(['video', 'audio'] as const).map((track) => <div key={track} className={`track-header ${selectedTrack === track ? 'selected-track' : ''}`} onClick={() => selectTrack(track)}><button className="track-select" onClick={() => selectTrack(track)}>{track === 'video' ? <Video size={14} /> : <AudioLines size={14} />}<span>{track === 'video' ? 'VIDEO 1' : 'AUDIO 1'}</span></button><div className="track-switches"><button aria-label={`${track === 'video' ? videoMuted ? 'Unmute' : 'Mute' : audioMuted ? 'Unmute' : 'Mute'} ${track === 'video' ? 'Video 1' : 'Audio 1'}`} title="Mute affects preview and export" aria-pressed={track === 'video' ? videoMuted : audioMuted} className={(track === 'video' ? videoMuted : audioMuted) ? 'switch-off' : ''} disabled={track === 'video' ? !video : !audio} onClick={(event) => { event.stopPropagation(); setSelectedTrack(track); recordHistory(); if (track === 'video') setVideoMuted(!videoMuted); else setAudioMuted(!audioMuted) }}>{(track === 'video' ? videoMuted : audioMuted) ? <VolumeX size={14} /> : <Volume2 size={14} />}</button>{track === 'video' && <button aria-label={videoHidden ? 'Show Video 1' : 'Hide Video 1'} title="Video visibility affects preview and export; audio is separate" aria-pressed={videoHidden} className={videoHidden ? 'switch-off' : ''} disabled={!video} onClick={(event) => { event.stopPropagation(); setSelectedTrack('video'); recordHistory(); setVideoHidden(!videoHidden) }}>{videoHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button>}</div></div>)}</div><div className="track-viewport" ref={trackViewportRef}><div className="tracks" ref={tracksRef} style={{ width: `${zoom}%` }}><div className="ruler" onPointerDown={beginScrub} onPointerMove={moveScrub} onPointerUp={() => { scrubbingRef.current = false }} onPointerCancel={() => { scrubbingRef.current = false }}>{Array.from({ length: rulerTicks }, (_, i) => i / (rulerTicks - 1)).map((part) => <span key={part} style={{ left: `${part * 100}%` }}>{formatTime(part * timelineDuration)}<i /></span>)}</div><div className="playhead" style={{ left: `${Math.min(position / timelineDuration * 100, 100)}%` }}><i /></div>{(['video', 'audio'] as const).map((track) => <div key={track} data-track-row={track} className={`track ${track}-track ${track === 'video' ? videoHidden ? 'track-disabled' : '' : audioMuted ? 'track-disabled' : ''}`} onPointerDown={(event) => { setSelectedTrack(track); beginScrub(event) }} onPointerMove={moveScrub} onPointerUp={() => { scrubbingRef.current = false }} onPointerCancel={() => { scrubbingRef.current = false }}>{edit[track].map((segment) => renderClip(track, segment))}</div>)}</div></div><div className="timeline-help">Ctrl/Shift+click: multi-select · Link: preserve sync · Split links both tracks · Drag edges snap (Alt: disable) · Wheel: zoom</div></div></section>
   </main>
 }

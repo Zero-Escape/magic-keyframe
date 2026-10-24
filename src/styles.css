@@ -89,3 +89,11 @@ button { font: inherit; color: inherit; }
 .top-actions { gap:5px; }
 .clip .detailed-waveform { opacity:.85; }
 .topbar { grid-template-columns:minmax(220px,1fr) minmax(0,auto) minmax(320px,1fr); gap:12px; }
+/* Placement-aware selection and linked A/V pairs. */
+.clip.draggable { cursor:grab; touch-action:none; }
+.clip.draggable:active { cursor:grabbing; }
+.link-badge { display:inline-block; margin-right:5px; vertical-align:middle; color:#e5c5ff; }
+.linked-clip { border-bottom-style:dashed; }
+.timeline-tools { grid-template-columns:auto minmax(0,1fr) auto; }
+.tool-group { gap:2px; }
+@media(max-width:1400px) { .timeline-tools .tool { padding:6px 5px; gap:4px; } .edit-controls { justify-content:flex-start; } .align-controls button { padding:5px; } }

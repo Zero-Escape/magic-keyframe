@@ -55,8 +55,11 @@ jobs:
             Open your existing .mkproj file using File → Open project. Projects reference your original media; keep that footage.
             The portable build does not register Windows file associations automatically.
 
-            Includes playhead-safe clip editing, undo/redo, .mkproj save/load, wheel zoom,
-            detailed stereo waveforms, media thumbnails, independent audio cuts, and 8-bit H.264/AAC export.
+            Multi-select clips with Ctrl/Shift+click and drag them together. Link aligned video/audio with Ctrl+L;
+            splitting creates separate linked left/right pairs. Unlink with Ctrl+Shift+L.
+            Clips snap at their edges; Alt disables snapping. Preview/export honor placements and gaps.
+            Undo/redo and .mkproj files retain moves and links. Existing v1 projects open; saving upgrades to v2.
+            Still includes detailed waveforms, thumbnails, and 8-bit H.264/AAC export.
             This is an unsigned early test build. Native Windows interaction/media behavior still needs hands-on checking.
       - name: Mark successful Windows build
         if: startsWith(github.ref, 'refs/tags/v')

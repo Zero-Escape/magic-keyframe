@@ -42,3 +42,47 @@ export function buildExportFilter(segments: ExportSegment[], audioOffset: number
   filters.push(`${segments.map((_, index) => `[v${index}][a${index}]`).join('')}concat=n=${count}:v=1:a=1[vout][aout]`)
   return filters.join(';')
 }
+
+export type PlacedSegment = { start: number; end: number; at: number }
+export type TimelineExportOptions = { width: number; height: number; fps: number; videoMuted?: boolean; audioMuted?: boolean; videoHidden?: boolean }
+// A placement-aware render: gaps are real black/silence; moving a clip changes
+// its destination, never its source trim. Camera audio follows its video pieces.
+export function buildTimelineExportFilter(video: PlacedSegment[], audio: PlacedSegment[], hasExternal: boolean, hasCameraAudio: boolean, options: TimelineExportOptions) {
+  const clips = [...video].sort((a, b) => a.at - b.at)
+  const endOf = (c: PlacedSegment) => c.at + c.end - c.start
+  const duration = Math.max(0, ...clips.map(endOf), ...audio.map(endOf))
+  if (!clips.length || !Number.isFinite(duration) || duration <= 0) throw new Error('No video clips to export')
+  const filters: string[] = [], pieces: string[] = []
+  const black = (duration: number) => {
+    const label = `black${pieces.length}`
+    filters.push(`color=c=black:s=${options.width}x${options.height}:r=${options.fps.toFixed(8)}:d=${seconds(duration)},setsar=1,format=yuv420p[${label}]`)
+    pieces.push(`[${label}]`)
+  }
+  if (options.videoHidden) black(duration)
+  else {
+    filters.push(`[0:v]setpts=PTS-STARTPTS,split=${clips.length}${clips.map((_, i) => `[tsrc${i}]`).join('')}`)
+    let cursor = 0
+    clips.forEach((clip, i) => {
+      if (clip.at > cursor + 1e-7) black(clip.at - cursor)
+      filters.push(`[tsrc${i}]trim=start=${seconds(clip.start)}:end=${seconds(clip.end)},setpts=PTS-STARTPTS,setsar=1,format=yuv420p[tv${i}]`)
+      pieces.push(`[tv${i}]`); cursor = endOf(clip)
+    })
+    if (duration > cursor + 1e-7) black(duration - cursor)
+  }
+  filters.push(`${pieces.join('')}concat=n=${pieces.length}:v=1:a=0[vout]`)
+  const enabled: string[] = []
+  const audioTrack = (input: string, source: PlacedSegment[], label: string) => {
+    // Negative audio positions are pre-roll, cropped at the sequence start.
+    const kept = source.filter((c) => endOf(c) > 0).map((c) => ({ ...c, start: c.start + Math.max(0, -c.at), at: Math.max(0, c.at) }))
+    if (!kept.length) return
+    filters.push(`${input}aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS,asplit=${kept.length}${kept.map((_, i) => `[${label}src${i}]`).join('')}`)
+    kept.forEach((c, i) => filters.push(`[${label}src${i}]atrim=start=${seconds(c.start)}:end=${seconds(c.end)},asetpts=PTS-STARTPTS,adelay=${Math.round(c.at * 48000)}S:all=1[${label}part${i}]`))
+    filters.push(`${kept.map((_, i) => `[${label}part${i}]`).join('')}amix=inputs=${kept.length}:duration=longest:normalize=0[${label}]`)
+    enabled.push(`[${label}]`)
+  }
+  if (hasCameraAudio && !options.videoMuted) audioTrack('[0:a]', clips, 'tcamera')
+  if (hasExternal && !options.audioMuted) audioTrack('[1:a]', audio, 'texternal')
+  if (enabled.length) filters.push(`${enabled.join('')}amix=inputs=${enabled.length}:duration=longest:dropout_transition=0:normalize=${enabled.length > 1 ? 1 : 0},apad,atrim=duration=${seconds(duration)},asetpts=N/SR/TB[aout]`)
+  else filters.push(`anullsrc=r=48000:cl=stereo,atrim=duration=${seconds(duration)},asetpts=N/SR/TB[aout]`)
+  return filters.join(';')
+}
