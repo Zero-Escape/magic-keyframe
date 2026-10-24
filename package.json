@@ -1,6 +1,6 @@
 {
   "name": "magic-keyframe",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "private": true,
   "description": "A focused wedding video editor for Byrne Photography.",
   "author": "Byrne Photography",
@@ -15,7 +15,8 @@
     "verify:media": "npm run build && node scripts/verify-export.cjs",
     "prepare:desktop": "node scripts/prepare-desktop.cjs",
     "start": "npm run prepare:desktop && npm run build && electron .",
-    "package:portable": "npm run prepare:desktop && npm run build && electron-builder --win zip --config.win.signAndEditExecutable=false"
+    "package:portable": "npm run prepare:desktop && npm run build && electron-builder --win zip --config.win.signAndEditExecutable=false",
+    "associate:projects": "npm run prepare:desktop && npm run build && node scripts/associate-projects.cjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
@@ -72,7 +73,16 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
-    }
+    },
+    "fileAssociations": [
+      {
+        "ext": "mkproj",
+        "name": "Magic Keyframe Project",
+        "description": "Magic Keyframe editing project",
+        "role": "Editor",
+        "mimeType": "application/x-magic-keyframe-project"
+      }
+    ]
   },
   "engines": {
     "node": ">=24"

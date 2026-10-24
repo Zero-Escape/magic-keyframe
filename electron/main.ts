@@ -1,9 +1,11 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron'
 import { pathToFileURL } from 'node:url'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { access, mkdir, rename, stat, unlink } from 'node:fs/promises'
+import { access, mkdir, rename, stat, unlink, readFile, writeFile } from 'node:fs/promises'
+import { readProject, writeProject, type Project } from './project-file.js'
+import { analyzeWaveform, audioThumbnail, type WaveformData } from './waveform.js'
 import packagedFfmpegStaticPath from 'ffmpeg-static'
 import { buildExportFilter, type ExportSegment } from './export-filter.js'
 
@@ -48,7 +50,16 @@ async function fileExists(filePath: string) {
   try { await access(filePath); return true } catch { return false }
 }
 
-async function generateProxy(filePath: string) {
+const proxyJobs = new Map<string, Promise<{ path: string; url: string }>>()
+function generateProxy(filePath: string) {
+  let pending = proxyJobs.get(filePath)
+  if (!pending) {
+    pending = buildProxy(filePath).finally(() => proxyJobs.delete(filePath))
+    proxyJobs.set(filePath, pending)
+  }
+  return pending
+}
+async function buildProxy(filePath: string) {
   if (!packagedFfmpegPath) throw new Error('FFmpeg is unavailable')
   const proxyFolder = path.join(app.getPath('userData'), 'proxies')
   await mkdir(proxyFolder, { recursive: true })
@@ -139,25 +150,55 @@ async function inspectMedia(filePath: string) {
   }
 }
 
-async function createWaveform(filePath: string, bucketCount = 900) {
+async function mediaVisuals(filePath: string, metadata: Awaited<ReturnType<typeof inspectMedia>>) {
   if (!packagedFfmpegPath) throw new Error('FFmpeg is unavailable')
-  const raw = await runProcess(unpackedPath(packagedFfmpegPath), [
-    '-v', 'error', '-i', filePath, '-vn', '-ac', '1', '-ar', '2000',
-    '-f', 'f32le', '-acodec', 'pcm_f32le', 'pipe:1',
-  ])
-  const samples = new Float32Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 4))
-  const size = Math.max(1, Math.floor(samples.length / bucketCount))
-  const peaks: number[] = []
-  let maximum = 0
-  for (let bucket = 0; bucket < bucketCount; bucket++) {
-    let peak = 0
-    const start = bucket * size
-    for (let sample = start; sample < Math.min(samples.length, start + size); sample++) peak = Math.max(peak, Math.abs(samples[sample]))
-    maximum = Math.max(maximum, peak)
-    peaks.push(peak)
+  const folder = path.join(app.getPath('userData'), 'analysis-v2')
+  await mkdir(folder, { recursive: true })
+  const source = await stat(filePath)
+  const key = createHash('sha1').update(filePath).update(String(source.size)).update(String(source.mtimeMs)).digest('hex')
+  let waveform: WaveformData | undefined
+  if (metadata.audio) {
+    const cache = path.join(folder, `${key}.json`)
+    try { waveform = JSON.parse(await readFile(cache, 'utf8')) }
+    catch {
+      waveform = await analyzeWaveform(unpackedPath(packagedFfmpegPath), filePath, metadata.audio.channels || 1)
+      await writeFile(cache, JSON.stringify(waveform)).catch(() => {})
+    }
   }
-  return peaks.map((peak) => maximum ? Math.min(1, peak / maximum) : 0)
+  let thumbnail: string | undefined
+  if (metadata.video) {
+    const target = path.join(folder, `${key}.jpg`)
+    if (!await fileExists(target)) {
+      const pending = `${target}.${process.pid}.${Date.now()}.jpg`
+      try {
+        await runProcess(unpackedPath(packagedFfmpegPath), ['-y', '-v', 'error', '-ss', String(Math.min(1, metadata.duration / 10)), '-i', filePath, '-map', '0:v:0', '-frames:v', '1', '-vf', 'scale=240:-2', '-q:v', '4', pending])
+        await rename(pending, target)
+      } catch { await unlink(pending).catch(() => {}) }
+    }
+    if (await fileExists(target)) thumbnail = pathToFileURL(target).toString()
+  } else if (waveform) thumbnail = audioThumbnail(waveform)
+  return { waveform, thumbnail }
 }
+
+let mainWindow: BrowserWindow | null = null
+let projectDirty = false
+let rendererReady = false
+let allowClose = false
+let pendingProject = process.argv.find((arg) => arg.toLowerCase().endsWith('.mkproj'))
+function sendCommand(command: string, filePath?: string) { mainWindow?.webContents.send('project:command', command, filePath) }
+function requestProject(filePath: string) {
+  if (rendererReady) sendCommand('open', filePath)
+  else pendingProject = filePath
+  if (mainWindow?.isMinimized()) mainWindow.restore()
+  mainWindow?.show(); mainWindow?.focus()
+}
+if (!app.requestSingleInstanceLock()) app.quit()
+app.on('second-instance', (_event, argv) => {
+  const file = argv.find((arg) => arg.toLowerCase().endsWith('.mkproj'))
+  if (file) requestProject(file)
+  else { mainWindow?.show(); mainWindow?.focus() }
+})
+app.on('open-file', (event, filePath) => { event.preventDefault(); requestProject(filePath) })
 
 function createWindow() {
   const window = new BrowserWindow({
@@ -175,6 +216,28 @@ function createWindow() {
     },
   })
 
+  mainWindow = window; rendererReady = false; allowClose = false; projectDirty = false
+  window.on('close', (event) => {
+    if (projectDirty && !allowClose) { event.preventDefault(); sendCommand('close') }
+  })
+  window.on('closed', () => { mainWindow = null; rendererReady = false })
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
+    { label: 'File', submenu: [
+      { label: 'New project', accelerator: 'CmdOrCtrl+N', click: () => sendCommand('new') },
+      { label: 'Open project…', accelerator: 'CmdOrCtrl+O', click: () => sendCommand('open') },
+      { label: 'Save project', accelerator: 'CmdOrCtrl+S', click: () => sendCommand('save') },
+      { label: 'Save project as…', accelerator: 'CmdOrCtrl+Shift+S', click: () => sendCommand('saveAs') },
+      { type: 'separator' }, { role: 'close' },
+    ] },
+    { label: 'Edit', submenu: [
+      { label: 'Undo edit', accelerator: 'CmdOrCtrl+Z', click: () => sendCommand('undo') },
+      { label: 'Redo edit', accelerator: 'CmdOrCtrl+Shift+Z', click: () => sendCommand('redo') },
+      { label: 'Redo edit', accelerator: 'Ctrl+Y', click: () => sendCommand('redo') },
+      { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' },
+    ] },
+    { role: 'viewMenu' }, { role: 'windowMenu' },
+  ]))
   if (isDev) window.loadURL('http://localhost:5173')
   else window.loadFile(path.join(__dirname, '../dist/index.html'))
 }
@@ -187,9 +250,10 @@ async function importMediaPaths(paths: string[]) {
   return Promise.all(files.map(async (filePath) => {
     if (!(await stat(filePath)).isFile()) throw new Error('Drop media files, not folders')
     const metadata = await inspectMedia(filePath)
+    if (!Number.isFinite(metadata.duration) || metadata.duration <= 0) throw new Error(`Could not determine media duration: ${path.basename(filePath)}`)
     if (!metadata.video && !metadata.audio) throw new Error(`No supported media streams in ${path.basename(filePath)}`)
     return { path: filePath, url: pathToFileURL(filePath).toString(), name: path.basename(filePath), metadata,
-      waveform: metadata.audio ? await createWaveform(filePath) : [] }
+      ...await mediaVisuals(filePath, metadata) }
   }))
 }
 
@@ -208,6 +272,52 @@ ipcMain.handle('media:choose', async () => {
 
 ipcMain.handle('media:proxy', (_event, filePath: string) => generateProxy(filePath))
 ipcMain.handle('media:export', (_event, request: ExportRequest) => exportVideo(request))
+
+ipcMain.on('project:dirty', (_event, dirty: boolean) => { projectDirty = Boolean(dirty) })
+ipcMain.on('project:ready', () => { rendererReady = true; if (pendingProject) { const file = pendingProject; pendingProject = undefined; sendCommand('open', file) } })
+ipcMain.on('project:close', () => { allowClose = true; mainWindow?.close() })
+ipcMain.handle('project:confirm', async () => {
+  const result = await dialog.showMessageBox(mainWindow!, { type: 'question', title: 'Unsaved project', message: 'Save changes to this project?', buttons: ['Save', 'Discard', 'Cancel'], defaultId: 0, cancelId: 2, noLink: true })
+  return ['save', 'discard', 'cancel'][result.response]
+})
+ipcMain.handle('project:save', async (_event, project: Project, currentPath?: string) => {
+  let filePath = currentPath
+  if (!filePath) {
+    const result = await dialog.showSaveDialog(mainWindow!, { title: 'Save Magic Keyframe project', defaultPath: 'Untitled Wedding.mkproj', filters: [{ name: 'Magic Keyframe project', extensions: ['mkproj'] }] })
+    if (result.canceled || !result.filePath) return null
+    filePath = result.filePath.toLowerCase().endsWith('.mkproj') ? result.filePath : `${result.filePath}.mkproj`
+  }
+  if (project.media.some((m) => path.resolve(m.path).toLowerCase() === path.resolve(filePath!).toLowerCase())) throw new Error('A project cannot overwrite source media.')
+  await writeProject(filePath, project)
+  return filePath
+})
+ipcMain.handle('project:open', async (_event, requestedPath?: string) => {
+  let filePath = requestedPath
+  if (!filePath) {
+    const result = await dialog.showOpenDialog(mainWindow!, { title: 'Open Magic Keyframe project', properties: ['openFile'], filters: [{ name: 'Magic Keyframe project', extensions: ['mkproj'] }] })
+    if (result.canceled) return null
+    filePath = result.filePaths[0]
+  }
+  const project = await readProject(filePath)
+  const loaded = []
+  let relinked = false
+  for (const entry of project.media) {
+    let source = path.resolve(path.dirname(filePath), entry.path)
+    if (!await fileExists(source)) {
+      if (entry.absolutePath && await fileExists(entry.absolutePath)) source = entry.absolutePath
+      else {
+        const result = await dialog.showOpenDialog(mainWindow!, { title: `Locate missing media: ${path.basename(entry.path)}`, properties: ['openFile'] })
+        if (result.canceled) return null
+        source = result.filePaths[0]; relinked = true
+      }
+    }
+    const item = (await importMediaPaths([source]))[0]
+    if ((entry.kind === 'video' && !item.metadata.video) || (entry.kind === 'audio' && (!item.metadata.audio || item.metadata.video))) throw new Error(`Wrong media type for ${entry.path}`)
+    if (project.edit[entry.kind].some((s) => s.end > item.metadata.duration + .05)) throw new Error(`Media is shorter than the saved edits: ${item.name}`)
+    loaded.push({ ...item, id: entry.id, kind: entry.kind })
+  }
+  return { path: filePath, project, media: loaded, relinked }
+})
 
 app.whenReady().then(() => {
   createWindow()

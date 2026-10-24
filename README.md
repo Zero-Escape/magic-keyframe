@@ -8,7 +8,8 @@ A focused Windows 11 video editor for Byrne Photography's long-form wedding foot
 - 48 kHz external recorder audio import
 - Proxy-based preview
 - Manual audio synchronization with visible waveforms and precise nudging
-- Beginning/end trims and middle cuts on one camera clip
+- Beginning/end trims and middle cuts on camera and external audio
+- Undo/redo, .mkproj save/load, media thumbnails, zoomable stereo waveforms
 - 4K MP4 delivery with NVIDIA NVENC acceleration
 
 ## Windows: clone and run
@@ -44,8 +45,8 @@ you previously extracted. To make a new standalone Windows ZIP instead, run
 
 `npm run dev` launches the hot-reloading Vite/Electron development mode.
 `npm run verify:media` builds and runs the rendered media regression checks.
-Windows GitHub Actions builds a portable ZIP on pushes to main; tagged version builds
-also publish it to the matching GitHub release. GitHub Actions runs must finish before
+Windows GitHub Actions builds a portable ZIP and a Windows installer on pushes to main;
+tagged version builds publish both to the matching GitHub release. GitHub Actions runs must finish before
 their downloadable artifacts are available.
 
 ## Editing
@@ -58,7 +59,11 @@ and the sidebar and timeline dividers can be dragged to fit a wide monitor.
 Drop local media anywhere in the project window, or use Import. Select Video 1 or Audio 1
 to apply Split, Remove, and the IN/OUT fields to that track. Audio-only cuts leave silence
 at their original positions; they do not shift later audio. Drag an audio section to shift
-the entire external audio track for sync.
+the entire external audio track for sync. Selecting, trimming, or dragging clips does
+not move the paused playhead; use the ruler or empty track space to seek. The mouse
+wheel zooms around the pointer; Shift+wheel (or horizontal trackpad scrolling) scrolls.
+Waveforms show signed 5 ms envelopes, with separate stereo channels and more detail
+as you zoom. They are cached locally alongside representative video thumbnails.
 
 Each track has an independent mute switch. Video 1 also has a visibility switch. These
 settings affect both preview and export; hidden video exports as black with audio
@@ -67,7 +72,7 @@ both to compare sync (both enabled sources are mixed on export).
 
 The current build handles one video and one optional external audio track. It exports
 kept sections as one 8-bit H.264 4:2:0 MP4 with AAC audio. Multiple clips, automatic
-waveform sync, and project save/reopen are not yet implemented.
+waveform sync, and multi-track editing are not yet implemented.
 
 For a Windows test build from Linux, run `npm run package:portable`. The setup
 step obtains a Windows-native FFmpeg executable instead of packaging the Linux one.
@@ -78,9 +83,38 @@ Run `npm run verify:media` for rendered media checks of 10-bit 4:2:2 conversion,
 cut silence/alignment, source mixing/muting, and hidden-video output. Windows native
 file dropping and hardware encoding still require a hands-on Windows check.
 
-Discord delivery: the full Windows portable ZIP currently exceeds the 100 MiB
-attachment cap. For the existing Electron 44 portable installation, a smaller update
-ZIP can carry `resources/app.asar`, the current unpacked FFmpeg asset/licenses, and
-installation instructions. Close the app, merge into its existing folder, and rename
-the executable to Magic Keyframe.exe. Do not assume an app.asar-only update is safe
-if runtime/dependency versions or Electron ASAR-integrity fuses change.
+## Projects and undo
+
+Use **File → Save project** / **Ctrl+S** to write a `.mkproj` file. **Ctrl+Shift+S**
+saves a copy; **Ctrl+O** opens a project; **Ctrl+N** starts a new one. The toolbar has
+New, Open, and Save buttons too. Unsaved edits are marked with a dot, and opening,
+starting a new project, or closing the editor prompts Save / Discard / Cancel.
+
+Projects store imported media references, all video/audio cuts and trims, audio sync
+offset, mute/visibility settings, playhead position, zoom and panel sizes. **They do
+not embed your original footage.** Keep the originals; move them together with the
+project when possible. Relative paths are tried first, then the saved absolute path.
+If media is missing, the editor asks you to locate it; cancel leaves your current
+project intact. After locating moved files, save the project to retain the new paths. Proxies, thumbnails and waveforms regenerate/cache locally.
+
+**Ctrl+Z** undoes and **Ctrl+Shift+Z** or **Ctrl+Y** redoes up to 100 project edits,
+including imports, trims, splits, removal, sync offsets and mute/visibility changes.
+A drag is one undo step. Playback, selection and zoom are not edit-history steps.
+History is session-only and starts fresh when a project is opened; your saved edits
+are retained. Save is manual (no autosave/recovery yet).
+
+### Opening `.mkproj` files from Explorer
+
+The Windows **Setup installer** registers the project file type. The portable ZIP
+does not alter your Windows settings automatically. When running from a Git clone,
+you can register the current checkout for your Windows account (no admin needed):
+
+```powershell
+npm run associate:projects
+```
+
+Keep the clone at that location afterward, or rerun that command after moving it.
+Windows may ask which application to use for `.mkproj`; choose the registered app.
+Double-clicking a project opens it in the existing editor, with an unsaved-changes
+prompt if needed. Projects opened from Explorer during import/export are queued until the operation finishes. Registry/file-association behavior still needs
+a hands-on Windows check; a successful Linux build cannot prove that behavior.
