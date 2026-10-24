@@ -21,22 +21,43 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run package:win
       - run: npm run package:portable
       - uses: actions/upload-artifact@v4
         with:
           name: Magic-Keyframe-Windows
-          path: |
-            release/*.zip
-            release/*Setup*.exe
+          path: release/*.zip
+      - name: Prepare release downloads
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release-downloads -Force | Out-Null
+          $zip = Get-ChildItem release/Magic-Keyframe-Portable-*.zip | Select-Object -First 1
+          if (-not $zip) { throw "Portable ZIP was not produced" }
+          Copy-Item $zip.FullName release-downloads/Magic-Keyframe-Windows-Portable.zip
+          $hash = (Get-FileHash release-downloads/Magic-Keyframe-Windows-Portable.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  Magic-Keyframe-Windows-Portable.zip" | Set-Content release-downloads/SHA256SUMS.txt -Encoding ascii
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release/*.zip
-            release/*Setup*.exe
+            release-downloads/Magic-Keyframe-Windows-Portable.zip
+            release-downloads/SHA256SUMS.txt
+          fail_on_unmatched_files: true
           generate_release_notes: true
+          body: |
+            ## Windows portable download
+            Download **Magic-Keyframe-Windows-Portable.zip** below (not GitHub's source-code ZIP).
+            Extract the entire ZIP into a new folder, then double-click **Magic Keyframe.exe**.
+            No Git, Node.js, PowerShell, or installation required. Keep the accompanying resources folder.
+
+            To update, close the old version and extract the new ZIP into a separate folder.
+            Open your existing .mkproj file using File → Open project. Projects reference your original media; keep that footage.
+            The portable build does not register Windows file associations automatically.
+
+            Includes playhead-safe clip editing, undo/redo, .mkproj save/load, wheel zoom,
+            detailed stereo waveforms, media thumbnails, independent audio cuts, and 8-bit H.264/AAC export.
+            This is an unsigned early test build. Native Windows interaction/media behavior still needs hands-on checking.
       - name: Mark successful Windows build
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash

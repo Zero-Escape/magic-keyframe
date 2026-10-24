@@ -12,7 +12,24 @@ A focused Windows 11 video editor for Byrne Photography's long-form wedding foot
 - Undo/redo, .mkproj save/load, media thumbnails, zoomable stereo waveforms
 - 4K MP4 delivery with NVIDIA NVENC acceleration
 
-## Windows: clone and run
+## Windows: download and run (recommended)
+
+[**Download the latest Windows portable ZIP**](https://github.com/Zero-Escape/magic-keyframe/releases/latest/download/Magic-Keyframe-Windows-Portable.zip)
+· [Release notes and downloads](https://github.com/Zero-Escape/magic-keyframe/releases/latest)
+
+1. Download **Magic-Keyframe-Windows-Portable.zip** from Releases, not the source-code ZIP.
+2. Right-click the ZIP → **Extract All** into a new folder.
+3. Open that folder and double-click **Magic Keyframe.exe**.
+
+No Git, Node.js, terminal, or installation required. Keep the entire extracted folder,
+including `resources/`. You can make a desktop shortcut to the executable.
+
+For updates, close the old app, download the latest portable ZIP, and extract it into
+a new folder. Open your `.mkproj` project from **File → Open project**. Keep your original
+media files; project files contain references, not copies of the footage. Automatic
+in-app updating is not implemented. The build is unsigned and still an early test build.
+
+## Developers: Windows clone and run
 
 Install **Git for Windows** and **Node.js 24 LTS** first. In PowerShell:
 
@@ -45,8 +62,9 @@ you previously extracted. To make a new standalone Windows ZIP instead, run
 
 `npm run dev` launches the hot-reloading Vite/Electron development mode.
 `npm run verify:media` builds and runs the rendered media regression checks.
-Windows GitHub Actions builds a portable ZIP and a Windows installer on pushes to main;
-tagged version builds publish both to the matching GitHub release. GitHub Actions runs must finish before
+Windows GitHub Actions builds a portable ZIP on pushes to main;
+tagged version builds publish the portable ZIP and its SHA-256 to GitHub Releases.
+The installer build is separate (`npm run package:win`) and does not block portable releases. GitHub Actions runs must finish before
 their downloadable artifacts are available.
 
 ## Editing
@@ -105,7 +123,7 @@ are retained. Save is manual (no autosave/recovery yet).
 
 ### Opening `.mkproj` files from Explorer
 
-The Windows **Setup installer** registers the project file type. The portable ZIP
+The optional Windows **Setup installer** is configured to register the project file type. The portable ZIP
 does not alter your Windows settings automatically. When running from a Git clone,
 you can register the current checkout for your Windows account (no admin needed):
 
