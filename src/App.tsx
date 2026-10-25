@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { AudioLines, Download, Eye, EyeOff, FilePlus2, FolderOpen, KeyRound, Link2, Pause, Play, Plus, Redo2, Save, Scissors, SkipBack, SkipForward, Trash2, Undo2, Unlink2, Video, Volume2, VolumeX, WandSparkles } from 'lucide-react'
 import { activeClip, emptyEdit, endAt, linkedSelection, linkClips, moveClips, ordered, removeClips, splitClips, timelineEnd, transitionEdges, trimClip, unlinkClips, type Segment, type TimelineEdit, type Track } from '../electron/timeline'
-import { effects, defaultEffects, type ClipEffects } from '../electron/effects'
+import { effects, defaultEffects, effectLimits, type ClipEffects } from '../electron/effects'
 import type { MediaItem, Snapshot } from './editor-types'
 import { Preview, AudioMixer, Meter } from './Preview'
 import { EffectsPanel, type SyncCandidate } from './EffectsPanel'
@@ -44,10 +44,10 @@ export default function App() {
   const tracksRef = useRef<HTMLDivElement>(null), viewportRef = useRef<HTMLDivElement>(null), dragDepth = useRef(0), scrubbing = useRef(false)
   const clipDrag = useRef<{ x: number; scroll: number; base: Snapshot; ids: string[]; moved: boolean; scale: number; collapse?: string[] } | null>(null)
   const trimDrag = useRef<{ kind: Track; id: string; edge: 'start' | 'end'; moved: boolean } | null>(null)
-  const fadeDrag = useRef<{ id: string; edge: 'fadeIn' | 'fadeOut'; x: number; scroll: number; scale: number; initial: number; max: number; base: Snapshot; moved: boolean } | null>(null)
+  const fadeDrag = useRef<{ id: string; kind: Track; edge: 'fadeIn' | 'fadeOut' | 'audioFadeIn' | 'audioFadeOut'; x: number; scroll: number; scale: number; initial: number; max: number; base: Snapshot; moved: boolean } | null>(null)
   const [activeFade, setActiveFade] = useState<string | null>(null)
   const resizing = useRef<{ kind: 'sidebar' | 'timeline'; initial: number; x: number; y: number } | null>(null)
-  const fp = fingerprint(state), dirty = fp !== savedFingerprint, projectDuration = timelineEnd(edit)
+  const fp = useMemo(() => fingerprint(state), [state]), dirty = fp !== savedFingerprint, projectDuration = timelineEnd(edit)
   const timelineDuration = Math.max(dragDuration || 0, projectDuration, 1)
   const live = useRef({ state, fp, dirty, projectPath }); live.current = { state, fp, dirty, projectPath }
   const selectedClips = [...edit.video, ...edit.audio].filter((c) => selection.includes(c.id))
@@ -61,7 +61,7 @@ export default function App() {
   const title = projectPath?.split(/[\\/]/).pop()?.replace(/\.mkproj$/i, '') || 'Untitled Wedding'
   const rows = [...edit.lanes.video.map((lane, index) => ({ kind: 'video' as Track, lane, index })).reverse(), ...edit.lanes.audio.map((lane, index) => ({ kind: 'audio' as Track, lane, index }))]
   const viewEdit = audition || edit
-  const previewSources = proxyMode ? proxies : Object.fromEntries(media.filter((m) => m.kind === 'video').map((m) => [m.id, m.url]))
+  const previewSources = useMemo(() => proxyMode ? proxies : Object.fromEntries(media.filter((m) => m.kind === 'video').map((m) => [m.id, m.url])), [proxyMode, proxies, media])
   const videoMedia = media.filter((m) => m.kind === 'video'), proxyWeight = videoMedia.reduce((n, m) => n + m.metadata.duration, 0)
   const proxyPercent = proxyWeight ? videoMedia.reduce((n, m) => n + m.metadata.duration * (proxies[m.id] ? 100 : proxyProgress[m.path]?.percent || 0), 0) / proxyWeight : 0
   const fail = (message: string, error?: unknown) => setNotice({ kind: 'error', message: `${message}${error ? ` ${String(error)}` : ''}` })
@@ -73,7 +73,7 @@ export default function App() {
   const undo = () => { if (!undoStack.length) return; setRedoStack((s) => [...s, state]); restore(undoStack.at(-1)!); setUndoStack((s) => s.slice(0, -1)) }
   const redo = () => { if (!redoStack.length) return; setUndoStack((s) => [...s, state]); restore(redoStack.at(-1)!); setRedoStack((s) => s.slice(0, -1)) }
   const draftChanged = useCallback((value?: { id: string; value: ClipEffects }) => setDraft(value), [])
-  const project = (): ProjectData => ({ format: 'magic-keyframe-project', version: 4, media: media.map(({ id, kind, path }) => ({ id, kind, path })), edit, view: { position: positionRef.current, zoom, timelineHeight, sidebarWidth } })
+  const project = (): ProjectData => ({ format: 'magic-keyframe-project', version: 5, media: media.map(({ id, kind, path }) => ({ id, kind, path })), edit, view: { position: positionRef.current, zoom, timelineHeight, sidebarWidth } })
   const projectRef = useRef(project()); projectRef.current = project()
 
   useEffect(() => { document.title = `${dirty ? '● ' : ''}${title} — Magic Keyframe`; window.magicKey?.setProjectDirty(dirty) }, [dirty, title])
@@ -345,32 +345,34 @@ export default function App() {
     const value = Number(trimDraft[edge]); if (!Number.isFinite(value)) return
     commitEdit(trimClip(edit, selected.id, edge, Math.round(value * fps) / fps, selectedMedia.metadata.duration, frame))
   }
-  const beginFade = (event: React.PointerEvent, clip: Segment, edge: 'fadeIn' | 'fadeOut') => {
+  const beginFade = (event: React.PointerEvent, clip: Segment, edge: 'fadeIn' | 'fadeOut' | 'audioFadeIn' | 'audioFadeOut') => {
     if (event.button !== 0) return
     event.preventDefault(); event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId)
-    setSelection(linkedSelection(edit, [clip.id])); setFocusId(clip.id); setActiveLane({ kind: 'video', lane: clip.lane })
-    const max = Math.min(10, (clip.end - clip.start) / 2)
-    fadeDrag.current = { id: clip.id, edge, x: event.clientX, scroll: viewportRef.current?.scrollLeft || 0, scale: timelineDuration / tracksRef.current!.clientWidth, initial: Math.min(max, effects(clip.effects)[edge]), max, base: state, moved: false }
+    const kind: Track = edit.audio.some((c) => c.id === clip.id) ? 'audio' : 'video'
+    setSelection(linkedSelection(edit, [clip.id])); setFocusId(clip.id); setActiveLane({ kind, lane: clip.lane })
+    const max = Math.min(effectLimits[edge][1], (clip.end - clip.start) / 2)
+    fadeDrag.current = { id: clip.id, kind, edge, x: event.clientX, scroll: viewportRef.current?.scrollLeft || 0, scale: timelineDuration / tracksRef.current!.clientWidth, initial: Math.min(max, effects(clip.effects)[edge]), max, base: state, moved: false }
     setActiveFade(`${clip.id}:${edge}`)
   }
   const moveFade = (event: React.PointerEvent) => {
     event.stopPropagation(); const drag = fadeDrag.current; if (!drag) return
     const pixels = event.clientX - drag.x + (viewportRef.current?.scrollLeft || 0) - drag.scroll
     if (!drag.moved && Math.abs(pixels) < 3) return
-    const value = Math.max(0, Math.min(drag.max, drag.initial + Math.round(pixels * drag.scale * (drag.edge === 'fadeIn' ? 1 : -1) * fps) / fps))
-    const clip = drag.base.edit.video.find((c) => c.id === drag.id); if (!clip || (!drag.moved && value === effects(clip.effects)[drag.edge])) return
+    const value = Math.max(0, Math.min(drag.max, drag.initial + Math.round(pixels * drag.scale * (drag.edge.endsWith('In') ? 1 : -1) * fps) / fps))
+    const clip = drag.base.edit[drag.kind].find((c) => c.id === drag.id); if (!clip || (!drag.moved && value === effects(clip.effects)[drag.edge])) return
     if (!drag.moved) { stop(); record(drag.base); drag.moved = true }
-    setState({ ...drag.base, edit: { ...drag.base.edit, video: drag.base.edit.video.map((c) => c.id === drag.id ? { ...c, effects: { ...c.effects, [drag.edge]: value } } : c) } })
+    setState({ ...drag.base, edit: { ...drag.base.edit, [drag.kind]: drag.base.edit[drag.kind].map((c) => c.id === drag.id ? { ...c, effects: { ...c.effects, [drag.edge]: value } } : c) } })
   }
   const endFade = (event: React.PointerEvent) => { event.stopPropagation(); fadeDrag.current = null; setActiveFade(null) }
-  const keyFade = (event: React.KeyboardEvent, clip: Segment, edge: 'fadeIn' | 'fadeOut') => {
+  const keyFade = (event: React.KeyboardEvent, clip: Segment, edge: 'fadeIn' | 'fadeOut' | 'audioFadeIn' | 'audioFadeOut') => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
     event.preventDefault(); event.stopPropagation()
     if (fadeDrag.current) return
-    const max = Math.min(10, (clip.end - clip.start) / 2), current = Math.min(max, effects(clip.effects)[edge])
-    const delta = (event.key === 'ArrowRight' ? 1 : -1) * (edge === 'fadeIn' ? 1 : -1) * frame * (event.shiftKey ? 10 : 1)
+    const kind: Track = edit.audio.some((c) => c.id === clip.id) ? 'audio' : 'video'
+    const max = Math.min(effectLimits[edge][1], (clip.end - clip.start) / 2), current = Math.min(max, effects(clip.effects)[edge])
+    const delta = (event.key === 'ArrowRight' ? 1 : -1) * (edge.endsWith('In') ? 1 : -1) * frame * (event.shiftKey ? 10 : 1)
     const value = event.key === 'Home' ? 0 : event.key === 'End' ? max : Math.max(0, Math.min(max, current + delta))
-    commitEdit({ ...edit, video: edit.video.map((c) => c.id === clip.id ? { ...c, effects: { ...c.effects, [edge]: value } } : c) })
+    commitEdit({ ...edit, [kind]: edit[kind].map((c) => c.id === clip.id ? { ...c, effects: { ...c.effects, [edge]: value } } : c) })
   }
   const changeZoom = (value: number) => { setZoom(value); requestAnimationFrame(() => { const node = viewportRef.current; if (node && tracksRef.current) node.scrollLeft = position / timelineDuration * tracksRef.current.clientWidth - node.clientWidth / 2 }) }
   useEffect(() => {
@@ -388,13 +390,18 @@ export default function App() {
       <span className="trim-handle left" title="Trim source start" onPointerDown={(event) => beginTrim(event, kind, clip, 'start')} onPointerMove={moveTrim} onPointerUp={() => { trimDrag.current = null }} onPointerCancel={() => { trimDrag.current = null }} />
       <Waveform data={item.waveform} start={clip.start} end={clip.end} left={clip.at / timelineDuration * viewport.width * zoom / 100} width={d / timelineDuration * viewport.width * zoom / 100} viewport={viewport.width} scroll={viewport.scroll} />
       <div className="clip-title"><strong>{clip.linkId && <Link2 size={11} />}{item.name}</strong><small>{clock(clip.start)} → {clock(clip.end)} {Object.entries(e).some(([key, val]) => val !== defaultEffects[key as keyof ClipEffects]) && ' · FX'}</small></div>
-      {(kind === 'video' ? e.fadeIn : e.audioFadeIn) > 0 && <i className="fade-marker in" style={{ width: `${Math.min(.5, (kind === 'video' ? e.fadeIn : e.audioFadeIn) / d) * 100}%` }} />}
-      {(kind === 'video' ? e.fadeOut : e.audioFadeOut) > 0 && <i className="fade-marker out" style={{ width: `${Math.min(.5, (kind === 'video' ? e.fadeOut : e.audioFadeOut) / d) * 100}%` }} />}
+      {(['in', 'out'] as const).map((side) => {
+        const value = Math.min(d / 2, kind === 'video' ? side === 'in' ? e.fadeIn : e.fadeOut : side === 'in' ? e.audioFadeIn : e.audioFadeOut)
+        if (!value || (side === 'in' ? blend.incoming : blend.outgoing)) return null
+        return <div key={side} className={`fade-ramp ${side} ${kind}`} style={{ width: `${value / d * 100}%` }} title={`${kind === 'video' ? 'Black fade' : 'Audio fade'} ${side}: ${value.toFixed(2)}s`}>
+          <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><polygon points={side === 'in' ? '0,0 100,100 0,100' : '0,100 100,0 100,100'} /><path d={side === 'in' ? 'M0 100L100 0' : 'M0 0L100 100'} /></svg><span>{side === 'in' ? '↗' : '↘'} {value.toFixed(2)}s</span>
+        </div>
+      })}
       {blend.incoming > 0 && <div className="overlap-marker in" style={{ width: `${blend.incoming / d * 100}%` }}><span>{kind === 'video' ? 'Dissolve' : 'Crossfade'} {blend.incoming.toFixed(2)}s</span></div>}
       {blend.outgoing > 0 && <div className="overlap-marker out" style={{ width: `${blend.outgoing / d * 100}%` }} />}
-      {kind === 'video' && (['fadeIn', 'fadeOut'] as const).map((edge) => {
-        const value = Math.min(e[edge], 10, d / 2), label = edge === 'fadeIn' ? 'Fade from black' : 'Fade to black', active = activeFade === `${clip.id}:${edge}`
-        return <button key={edge} disabled={!!(edge === 'fadeIn' ? blend.incoming : blend.outgoing)} type="button" role="slider" aria-label={`${label}: ${item.name}`} aria-valuemin={0} aria-valuemax={Math.min(10, d / 2)} aria-valuenow={value} aria-valuetext={`${value.toFixed(2)} seconds`} title={`${label}: ${value.toFixed(2)}s — drag inward to add, outward to remove; Home resets`} className={`video-fade-handle ${edge === 'fadeIn' ? 'in' : 'out'} ${active ? 'adjusting' : ''}`} style={{ [edge === 'fadeIn' ? 'left' : 'right']: `clamp(10px, calc(${value / d * 100}% - 16px), calc(100% - 26px))` }} onPointerDown={(event) => beginFade(event, clip, edge)} onPointerMove={moveFade} onPointerUp={endFade} onPointerCancel={endFade} onLostPointerCapture={endFade} onKeyDown={(event) => keyFade(event, clip, edge)}>
+      {(kind === 'video' ? ['fadeIn', 'fadeOut'] as const : ['audioFadeIn', 'audioFadeOut'] as const).map((edge) => {
+        const incoming = edge.endsWith('In'), value = Math.min(e[edge], effectLimits[edge][1], d / 2), label = kind === 'video' ? incoming ? 'Fade from black' : 'Fade to black' : incoming ? 'Audio fade in' : 'Audio fade out', active = activeFade === `${clip.id}:${edge}`
+        return <button key={edge} disabled={!!(incoming ? blend.incoming : blend.outgoing)} type="button" role="slider" aria-label={`${label}: ${item.name}`} aria-valuemin={0} aria-valuemax={Math.min(effectLimits[edge][1], d / 2)} aria-valuenow={value} aria-valuetext={`${value.toFixed(2)} seconds`} title={`${label}: ${value.toFixed(2)}s — drag inward to add, outward to remove; Home resets`} className={`video-fade-handle ${incoming ? 'in' : 'out'} ${active ? 'adjusting' : ''}`} style={{ [incoming ? 'left' : 'right']: `clamp(10px, calc(${value / d * 100}% - 16px), calc(100% - 26px))` }} onPointerDown={(event) => beginFade(event, clip, edge)} onPointerMove={moveFade} onPointerUp={endFade} onPointerCancel={endFade} onLostPointerCapture={endFade} onKeyDown={(event) => keyFade(event, clip, edge)}>
           <span className="fade-triangle" />{active && <span className="fade-duration">{value.toFixed(2)}s</span>}
         </button>
       })}

@@ -1,16 +1,17 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
 import { pathToFileURL } from 'node:url'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { access, mkdir, rename, stat, unlink, readFile, writeFile } from 'node:fs/promises'
+import { constants, setPriority } from 'node:os'
+import { createHash, randomUUID } from 'node:crypto'
+import { access, mkdir, rename, stat, unlink, readFile, writeFile, statfs } from 'node:fs/promises'
 import { readProject, writeProject, validateProject, type Project } from './project-file.js'
 import { analyzeWaveform, audioThumbnail, type WaveformData } from './waveform.js'
 import packagedFfmpegStaticPath from 'ffmpeg-static'
 import { type RenderMedia } from './studio-export.js'
-import { renderBounded, type ExportTask } from './bounded-export.js'
+import { renderBounded, encode, type ExportTask } from './bounded-export.js'
 import { validateExportSettings, type ExportSettings, type ExportProgress } from './export-settings.js'
-import { effects, audioProcessing, type ClipEffects } from './effects.js'
+import { effects, effectLimits, audioProcessing, type ClipEffects } from './effects.js'
 import { autosave, recoveryList, discardRecovery, recoveryInfo } from './recovery.js'
 import { decodeEnvelope, findSync } from './sync-engine.js'
 import { associateProjects } from './association.js'
@@ -38,17 +39,17 @@ type ProbeResult = {
   streams?: ProbeStream[]
 }
 
-function runProcess(executable: string, args: string[]): Promise<Buffer> {
+function runProcess(executable: string, args: string[], stderrResult = false, task?: ExportTask): Promise<Buffer> {
+  if (task?.canceled) return Promise.reject(new Error('Audio measurement canceled'))
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { windowsHide: true })
-    const output: Buffer[] = []
-    const errors: Buffer[] = []
-    child.stdout.on('data', (chunk: Buffer) => output.push(chunk))
-    child.stderr.on('data', (chunk: Buffer) => errors.push(chunk))
+    const child = spawn(executable, [...(executable === unpackedPath(packagedFfmpegPath!) ? ['-nostdin', '-threads', '1', '-filter_threads', '1'] : []), ...args], { windowsHide: true })
+    if (task) task.child = child
+    if (child.pid) { try { setPriority(child.pid, constants.priority.PRIORITY_BELOW_NORMAL) } catch { /* Thread limits still apply. */ } }
+    let output = Buffer.alloc(0), errors = ''
+    child.stdout.on('data', (chunk: Buffer) => { output = Buffer.concat([output, chunk]); if (output.length > 16 * 1024 * 1024) { child.kill(); reject(new Error('Media metadata exceeded the size limit.')) } })
+    child.stderr.on('data', (chunk: Buffer) => { errors = (errors + chunk.toString()).slice(-64000) })
     child.on('error', reject)
-    child.on('close', (code) => code === 0
-      ? resolve(Buffer.concat(output))
-      : reject(new Error(Buffer.concat(errors).toString() || `Media process exited with ${code}`)))
+    child.on('close', (code) => { if (task) task.child = undefined; task?.canceled ? reject(new Error('Audio measurement canceled')) : code === 0 ? resolve(stderrResult ? Buffer.from(errors) : output) : reject(new Error(errors || `Media process exited with ${code}`)) })
   })
 }
 
@@ -59,7 +60,7 @@ async function fileExists(filePath: string) {
 const jobPools = { video: { active: 0, waiting: [] as (() => void)[] }, audio: { active: 0, waiting: [] as (() => void)[] } }
 async function acquireSlot(kind: 'video' | 'audio') {
   const pool = jobPools[kind]
-  if (pool.active < 2) pool.active++
+  if (pool.active < 1) pool.active++
   else await new Promise<void>((resolve) => pool.waiting.push(resolve))
   return () => { const next = pool.waiting.shift(); if (next) next(); else pool.active-- }
 }
@@ -74,6 +75,7 @@ async function runProxyProcess(filePath: string, args: string[], duration: numbe
   const started = Date.now()
   return new Promise<void>((resolve, reject) => {
     const child = spawn(unpackedPath(packagedFfmpegPath!), ['-progress', 'pipe:1', '-nostats', ...args], { windowsHide: true }); task.child = child
+    if (child.pid) { try { setPriority(child.pid, constants.priority.PRIORITY_BELOW_NORMAL) } catch { /* Best effort. */ } }
     let text = '', errors = ''
     proxyProgress(filePath, 'running', 0)
     child.stdout.on('data', (chunk: Buffer) => {
@@ -109,12 +111,12 @@ async function buildProxy(filePath: string, task: ProxyTask) {
   if (!await fileExists(outputPath)) {
     const duration = (await inspectMedia(filePath)).duration, release = await acquireSlot('video')
     const pendingPath = path.join(proxyFolder, `${key}-${process.pid}-${Date.now()}.mp4`)
-    const input = ['-y', '-v', 'error', '-i', filePath, '-map', '0:v:0', '-an', '-vf', 'scale=-2:720,format=yuv420p']
-    const output = ['-pix_fmt', 'yuv420p', '-g', '15', '-bf', '0', '-movflags', '+faststart', pendingPath]
+    const input = ['-y', '-nostdin', '-threads', '1', '-filter_threads', '1', '-v', 'error', '-i', filePath, '-map', '0:v:0', '-an', '-vf', 'scale=-2:720,format=yuv420p']
+    const output = ['-threads:v', '2', '-pix_fmt', 'yuv420p', '-g', '15', '-bf', '0', '-movflags', '+faststart', pendingPath]
     try {
       if (task.canceled) throw new Error('Proxy canceled')
       try { await runProxyProcess(filePath, [...input, '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '25', ...output], duration, task) }
-      catch (error) { if (task.canceled) throw error; await runProxyProcess(filePath, [...input, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', ...output], duration, task) }
+      catch (error) { if (task.canceled || !/cannot load (?:nvcuda|nvencodeapi|libcuda|libnvidia-encode)|no (?:capable|nvenc capable) devices|driver does not support|required nvenc|minimum required nvidia|unknown encoder.*nvenc|no device available|unsupported device/i.test(String(error))) throw error; await runProxyProcess(filePath, [...input, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', ...output], duration, task) }
       if (task.canceled) throw new Error('Proxy canceled')
       await rename(pendingPath, outputPath)
     } catch (error) { await unlink(pendingPath).catch(() => {}); throw error } finally { release() }
@@ -125,6 +127,7 @@ async function buildProxy(filePath: string, task: ProxyTask) {
 }
 
 type ExportRequest = { id: string; project: Project; settings: ExportSettings }
+let lastExportPath: string | undefined
 let activeExport: ExportTask | undefined
 async function exportVideo(request: ExportRequest) {
   if (activeExport) throw new Error('An export is already running.')
@@ -134,7 +137,8 @@ async function exportVideo(request: ExportRequest) {
   const started = Date.now(), emit = (event: ExportProgress) => mainWindow?.webContents.send('media:export-progress', event)
   try {
     for (const proxy of proxyTasks.values()) { proxy.canceled = true; proxy.child?.kill() }
-    await Promise.allSettled([...proxyJobs.values()])
+    for (const audio of audioTasks.values()) { audio.canceled = true; audio.child?.kill() }
+    await Promise.allSettled([...proxyJobs.values(), ...audioJobs.values()])
     const settings = validateExportSettings(request.settings), project = validateProject(request.project), usedIds = new Set([...project.edit.video, ...project.edit.audio].map((c) => c.mediaId))
     if (!project.edit.video.length) throw new Error('Add at least one video clip before exporting.')
     emit({ id: task.id, phase: 'preparing', elapsed: 0, message: 'Checking sources and preparing export…' })
@@ -153,8 +157,18 @@ async function exportVideo(request: ExportRequest) {
     if (result.canceled || !result.filePath || task.canceled) return { canceled: true }
     const output = result.filePath.toLowerCase().endsWith('.mp4') ? result.filePath : `${result.filePath}.mp4`
     if (project.media.some((m) => path.resolve(m.path).toLowerCase() === path.resolve(output).toLowerCase())) throw new Error('Export cannot overwrite source media.')
-    await renderBounded(unpackedPath(packagedFfmpegPath), project.edit, media, settings, fps, output, task, emit)
-    return { canceled: false, path: output }
+    const prepared = new Map<string, string>()
+    const clips = (['video', 'audio'] as const).flatMap((kind) => project.edit[kind].filter((c) => !project.edit.lanes[kind][c.lane].muted && c.at < (settings.rangeEnd || Infinity) && c.at + c.end - c.start > settings.rangeStart && media.find((m) => m.id === c.mediaId)?.audio && audioProcessing(effects(c.effects)).length))
+    for (let i = 0; i < clips.length; i++) {
+      if (task.canceled) return { canceled: true }
+      const c = clips[i], source = media.find((m) => m.id === c.mediaId)!
+      emit({ id: task.id, phase: 'preparing', elapsed: (Date.now() - started) / 1000, message: `Preparing continuous audio ${i + 1}/${clips.length}: ${path.basename(source.path)}` })
+      const audio = await audioPreview(source.path, c.effects, task, (seconds, duration) => emit({ id: task.id, phase: 'preparing', percent: Math.min(99.9, (i + Math.min(1, seconds / duration)) / clips.length * 100), elapsed: (Date.now() - started) / 1000, message: `Preparing continuous audio ${i + 1}/${clips.length}: ${path.basename(source.path)}` }))
+      prepared.set(c.id, audio.path)
+    }
+    const saved = await renderBounded(unpackedPath(packagedFfmpegPath), project.edit, media, settings, fps, output, task, emit, prepared)
+    lastExportPath = saved
+    return { canceled: false, path: saved }
   } catch (error) {
     const message = task.canceled ? 'Export canceled. Temporary render files were cleaned up.' : String(error)
     emit({ id: task.id, phase: task.canceled ? 'canceled' : 'error', elapsed: (Date.now() - started) / 1000, message })
@@ -162,31 +176,60 @@ async function exportVideo(request: ExportRequest) {
     throw error
   } finally { activeExport = undefined }
 }
-const audioJobs = new Map<string, Promise<{ url: string }>>()
-async function audioPreview(filePath: string, value?: Partial<ClipEffects>) {
-  if (!packagedFfmpegPath) throw new Error('FFmpeg is unavailable')
+const audioTasks = new Map<string, ExportTask>()
+const audioJobs = new Map<string, Promise<{ url: string; path: string }>>()
+function validatedAudio(value?: Partial<ClipEffects>) {
   const e = effects(value)
-  if (!Number.isFinite(e.vocal) || e.vocal < 0 || e.vocal > 1 || !Number.isFinite(e.noise) || e.noise < 0 || e.noise > 30) throw new Error('Invalid audio processing settings.')
-  const source = await stat(filePath), folder = path.join(app.getPath('userData'), 'audio-preview-v1')
-  const key = createHash('sha1').update(filePath).update(`${source.size}-${source.mtimeMs}-${e.vocal}-${e.noise}-${audioProcessing(e).join(',')}`).digest('hex')
+  for (const key of ['vocal', 'noise', 'compression', 'leveling', 'gainDb'] as const) {
+    const [min, max] = effectLimits[key]
+    if (!Number.isFinite(e[key]) || e[key] < min || e[key] > max) throw new Error('Invalid audio processing settings.')
+  }
+  return e
+}
+async function audioPreview(filePath: string, value?: Partial<ClipEffects>, task?: ExportTask, onTime?: (seconds: number, duration: number) => void) {
+  if (!packagedFfmpegPath) throw new Error('FFmpeg is unavailable')
+  const e = validatedAudio(value), fx = audioProcessing(e), lossless = fx.length > 0
+  const source = await stat(filePath), folder = path.join(app.getPath('userData'), lossless ? 'audio-processed-v2' : 'audio-preview-v1')
+  const key = createHash('sha1').update(filePath).update(`${source.size}-${source.mtimeMs}-${e.vocal}-${e.noise}-${fx.join(',')}`).digest('hex')
   let job = audioJobs.get(key)
   if (!job) {
+    const audioTask = task || { id: key, canceled: false }; audioTasks.set(key, audioTask)
     job = (async () => {
       await mkdir(folder, { recursive: true })
-      const output = path.join(folder, `${key}.m4a`)
+      const output = path.join(folder, `${key}.${lossless ? 'wav' : 'm4a'}`)
       if (!await fileExists(output)) {
-        const release = await acquireSlot('audio')
-        const pending = `${output}.${process.pid}.m4a`, fx = audioProcessing(e)
+        const release = await acquireSlot('audio'), pending = `${output}.${process.pid}.${lossless ? 'wav' : 'm4a'}`
         try {
-          await runProcess(unpackedPath(packagedFfmpegPath!), ['-y', '-v', 'error', '-i', filePath, '-map', '0:a:0', '-vn', ...(fx.length ? ['-af', fx.join(',')] : []), '-ar', '48000', '-ac', '2', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', pending])
+          if (audioTask.canceled) throw new Error('Audio preparation canceled')
+          const duration = (await inspectMedia(filePath)).duration
+          const disk = await statfs(folder), needed = duration * (lossless ? 384000 : 24000) + 128 * 1024 ** 2
+          if (disk.bavail * disk.bsize < needed) throw new Error('Not enough space on the system drive for the audio cache. Free space or reduce audio processing.')
+          await encode(unpackedPath(packagedFfmpegPath!), ['-y', '-threads', '1', '-filter_threads', '1', '-i', filePath, '-map', '0:a:0', '-vn', ...(fx.length ? ['-af', fx.join(',')] : []), '-ar', '48000', '-ac', '2', '-threads:a', '1', ...(lossless ? ['-c:a', 'pcm_f32le', '-rf64', 'auto'] : ['-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart']), pending], audioTask, (time) => onTime?.(time, Math.max(.001, duration)))
+          if (audioTask.canceled) throw new Error('Audio preparation canceled')
           await rename(pending, output)
         } catch (error) { await unlink(pending).catch(() => {}); throw error } finally { release() }
       }
-      return { url: pathToFileURL(output).toString() }
-    })().finally(() => audioJobs.delete(key))
+      return { path: output, url: pathToFileURL(output).toString() }
+    })().finally(() => { audioJobs.delete(key); audioTasks.delete(key) })
     audioJobs.set(key, job)
   }
   return job
+}
+async function measureAudio(filePath: string, start: number, end: number, value?: Partial<ClipEffects>) {
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) throw new Error('Invalid measurement range.')
+  if (activeExport) throw new Error('Wait until export finishes before measuring audio.')
+  const e = validatedAudio(value), prepared = audioProcessing(e).length ? await audioPreview(filePath, e) : { path: filePath }
+  const measurement: ExportTask = { id: `measure-${randomUUID()}`, canceled: false }; audioTasks.set(measurement.id, measurement)
+  const release = await acquireSlot('audio')
+  try {
+    const result = await runProcess(unpackedPath(packagedFfmpegPath!), ['-hide_banner', '-v', 'info', '-ss', String(start), '-t', String(end - start), '-i', prepared.path, '-map', '0:a:0', '-vn', '-af', `volume=${10 ** (e.gainDb / 20)},loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json`, '-ar', '48000', '-f', 'null', '-'], true, measurement)
+    const match = result.toString().match(/\{[^{}]*"input_i"[^{}]*\}/)
+    if (!match) throw new Error('No loudness reading was returned.')
+    const stats = JSON.parse(match[0]), integrated = Number(stats.input_i), peak = Number(stats.input_tp), range = Number(stats.input_lra)
+    if (![integrated, peak, range].every(Number.isFinite)) throw new Error('This section is silent or too short to measure. Choose a longer section with sound.')
+    const loudnessGain = -16 - integrated, peakGain = -1.5 - peak, adjustment = Math.min(loudnessGain, peakGain)
+    return { integrated, peak, range, gainDb: Math.max(-60, Math.min(18, e.gainDb + adjustment)), peakLimited: peakGain < loudnessGain }
+  } finally { audioTasks.delete(measurement.id); release() }
 }
 
 function frameRate(value?: string) {
@@ -351,6 +394,7 @@ ipcMain.handle('media:cancel-proxies', async () => {
   for (const task of proxyTasks.values()) { task.canceled = true; task.child?.kill() }
   await Promise.allSettled([...proxyJobs.values()])
 })
+ipcMain.handle('media:show-export', () => { if (lastExportPath) shell.showItemInFolder(lastExportPath) })
 ipcMain.handle('media:export', (_event, request: ExportRequest) => exportVideo(request))
 ipcMain.handle('media:cancel-export', (_event, id: string) => { if (activeExport?.id === id) { activeExport.canceled = true; activeExport.child?.kill() } })
 
@@ -411,7 +455,8 @@ ipcMain.handle('project:recover', async (_event, file: string) => {
   const info = await recoveryInfo(recoveryFolder(), file), result = await loadProject(file)
   return result ? { ...result, path: info.projectPath, recovered: true, session: info.session } : null
 })
-ipcMain.handle('media:audio-preview', (_event, file: string, value?: Partial<ClipEffects>) => audioPreview(file, value))
+ipcMain.handle('media:measure-audio', (_event, file: string, start: number, end: number, value?: Partial<ClipEffects>) => measureAudio(file, start, end, value))
+ipcMain.handle('media:audio-preview', (_event, file: string, value?: Partial<ClipEffects>) => { if (activeExport) throw new Error('Audio preview is paused during export.'); return audioPreview(file, value) })
 ipcMain.handle('media:sync', async (_event, request: { referencePath: string; referenceStart: number; referenceEnd: number; targetPath: string; targetStart: number; targetEnd: number }) => {
   if (!packagedFfmpegPath) throw new Error('FFmpeg is unavailable')
   const [reference, target] = await Promise.all([
@@ -428,7 +473,7 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('before-quit', () => { if (activeExport) { activeExport.canceled = true; activeExport.child?.kill() }; for (const task of proxyTasks.values()) { task.canceled = true; task.child?.kill() } })
+app.on('before-quit', () => { for (const task of audioTasks.values()) { task.canceled = true; task.child?.kill() }; if (activeExport) { activeExport.canceled = true; activeExport.child?.kill() }; for (const task of proxyTasks.values()) { task.canceled = true; task.child?.kill() } })
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

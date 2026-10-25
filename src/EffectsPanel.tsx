@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { effects, defaultEffects, effectLimits, type ClipEffects } from '../electron/effects'
 import { transitionEdges, type Segment, type TimelineEdit, type Track } from '../electron/timeline'
 import type { MediaItem } from './editor-types'
@@ -18,13 +18,16 @@ const rowSpecs: { key: keyof ClipEffects; label: string; step: number; unit?: st
   { key: 'saturation', label: 'Saturation', step: .02 }, { key: 'temperature', label: 'Warmth', step: .02 },
   { key: 'fadeIn', label: 'Fade from black', step: .1, unit: ' s' }, { key: 'fadeOut', label: 'Fade to black', step: .1, unit: ' s' },
   { key: 'gainDb', label: 'Gain', step: .5, unit: ' dB' }, { key: 'audioFadeIn', label: 'Audio fade in', step: .1, unit: ' s' }, { key: 'audioFadeOut', label: 'Audio fade out', step: .1, unit: ' s' },
+  { key: 'compression', label: 'Compress loud peaks', step: .05 }, { key: 'leveling', label: 'Level quiet / loud passages', step: .05 },
   { key: 'vocal', label: 'Voice clarity', step: .1 }, { key: 'noise', label: 'Noise reduction', step: 1, unit: ' dB' },
 ]
 export function EffectsPanel(props: Props) {
   const { clip, kind, media, edit } = props, item = clip && media.find((m) => m.id === clip.mediaId)
   const blend = clip ? transitionEdges(edit[kind], clip) : { incoming: 0, outgoing: 0 }
   const [draft, setDraft] = useState<ClipEffects>(effects(clip?.effects)), [bypass, setBypass] = useState(false), [applying, setApplying] = useState(false)
-  const [allSelected, setAllSelected] = useState(false)
+  const [allSelected, setAllSelected] = useState(false), [measuring, setMeasuring] = useState(false), [reading, setReading] = useState<{ key: string; text: string }>()
+  const measurement = useRef(0)
+  useEffect(() => { measurement.current++; setMeasuring(false) }, [clip?.id, clip?.start, clip?.end, item?.path, draft])
   const [reference, setReference] = useState(''), [target, setTarget] = useState(''), [link, setLink] = useState(true)
   useEffect(() => { setDraft(effects(clip?.effects)); setBypass(false); setAllSelected(false) }, [clip?.id, clip?.effects])
   useEffect(() => { props.onDraft(clip ? { id: clip.id, value: bypass ? { ...draft, exposure: 0, contrast: 1, saturation: 1, temperature: 0, fadeIn: 0, fadeOut: 0 } : draft } : undefined) }, [clip?.id, draft, bypass])
@@ -48,7 +51,21 @@ export function EffectsPanel(props: Props) {
       <label className="effect-row">Timeline track<select value={clip.lane} onChange={(event) => props.onLane(clip, Number(event.target.value))}>{edit.lanes[kind].map((lane, index) => <option key={index} value={index}>{lane.name}</option>)}</select></label>
       {kind === 'video' && <><h3>Color</h3>{(['exposure', 'contrast', 'saturation', 'temperature'] as const).map(row)}<label className="check-row"><input type="checkbox" checked={bypass} onChange={(e) => setBypass(e.target.checked)} /> Bypass color / video fades for comparison</label>
         <h3>Video transitions</h3><div className="effect-presets"><button onClick={() => setDraft((e) => ({ ...e, fadeIn: .5, fadeOut: 0 }))}>Fade in</button><button onClick={() => setDraft((e) => ({ ...e, fadeIn: 0, fadeOut: .5 }))}>Fade out</button><button onClick={() => setDraft((e) => ({ ...e, fadeIn: .5, fadeOut: .5 }))}>Both</button></div>{row('fadeIn')}{row('fadeOut')}<p className="muted-copy">Fades use black, not an overlapping dissolve.</p></>}
-      {item.metadata.audio && <><h3>Audio</h3>{(['gainDb', 'audioFadeIn', 'audioFadeOut', 'vocal', 'noise'] as const).map(row)}<div className="effect-presets"><button onClick={() => setDraft((e) => ({ ...e, vocal: .6, noise: 8 }))}>Gentle speech cleanup</button><button onClick={() => setDraft((e) => ({ ...e, audioFadeIn: .25, audioFadeOut: .5 }))}>Soften edges</button></div><p className="muted-copy">Gain/fades audition live. Apply prepares voice EQ/compression and spectral noise reduction. Heavy settings can sound unnatural; this is not voice isolation.</p></>}
+      {item.metadata.audio && <><h3>Audio</h3>{(['gainDb', 'audioFadeIn', 'audioFadeOut', 'compression', 'leveling', 'vocal', 'noise'] as const).map(row)}<div className="effect-presets"><button onClick={() => setDraft((e) => ({ ...e, compression: .4, leveling: .6 }))}>Level speech / music</button><button onClick={() => setDraft((e) => ({ ...e, vocal: .6, noise: 8 }))}>Gentle speech cleanup</button><button onClick={() => setDraft((e) => ({ ...e, audioFadeIn: .25, audioFadeOut: .5 }))}>Soften edges</button></div><p className="muted-copy">Leveling lifts quiet passages; compression restrains loud peaks. Start gently: strong leveling can raise room noise. It cannot separate speech from music playing at the same time. Gain/fades audition live; Apply prepares other audio effects once and caches them for preview/export.</p>
+        <button className="button secondary" disabled={measuring || applying || !window.magicKey} onClick={async () => {
+          const token = ++measurement.current; setMeasuring(true); setReading(undefined)
+          try {
+            const result = await window.magicKey!.measureAudio(item.path, clip.start, clip.end, draft)
+            if (measurement.current !== token) return
+            const next = { ...draft, gainDb: Math.round(result.gainDb * 10) / 10 }
+            setDraft(next)
+            setReading({ key: JSON.stringify([clip.id, item.path, clip.start, clip.end, next]), text: `${result.integrated.toFixed(1)} LUFS · ${result.peak.toFixed(1)} dBTP · range ${result.range.toFixed(1)} LU. Gain matched toward −16 LUFS${result.peakLimited ? ' (limited by peak headroom; add compression if needed)' : ''}. Click Apply to save.` })
+          } catch (error) { if (measurement.current === token) setReading({ key: JSON.stringify([clip.id, item.path, clip.start, clip.end, draft]), text: String(error) }) }
+          finally { if (measurement.current === token) setMeasuring(false) }
+
+        }}>{measuring ? 'Measuring selected section…' : 'Measure & match loudness'}</button>
+        {reading?.key === JSON.stringify([clip.id, item.path, clip.start, clip.end, draft]) && <p className="loudness-reading" role="status">{reading.text}</p>}
+        <p className="muted-copy">For vows versus music, split them into sections and match each separately. Measurement excludes fades and track mixing; listen to the final mix.</p></>}
       <label className="check-row"><input type="checkbox" checked={allSelected} disabled={props.selectedCount < 2} onChange={(e) => setAllSelected(e.target.checked)} />Apply all settings to selected {kind} clips ({props.selectedCount})</label><p className="muted-copy">Draft controls are not saved until you click Apply to clip.</p><div className="effect-actions"><button className="button secondary" disabled={applying} onClick={() => setDraft({ ...defaultEffects })}>Reset draft</button><button className="button primary" disabled={applying || JSON.stringify(effects(clip.effects)) === JSON.stringify(draft)} onClick={async () => { setApplying(true); try { await props.onApply(clip, draft, allSelected) } finally { setApplying(false) } }}>{applying ? 'Preparing…' : 'Apply to clip'}</button></div>
     </> : <p className="empty-inspector">Select a timeline clip to adjust its color, sound or transitions.</p>}
     <section className="sync-panel"><h3>Automatic waveform sync</h3><label>Camera reference<select aria-label="Sync camera" value={reference} onChange={(e) => setReference(e.target.value)}>{cameras.map((c) => <option key={c.id} value={c.id}>{label(c)}</option>)}</select></label><label>Recorder clip<select aria-label="Sync recorder" value={target} onChange={(e) => setTarget(e.target.value)}>{edit.audio.map((c) => <option key={c.id} value={c.id}>{label(c)}</option>)}</select></label><button className="button secondary" disabled={!reference || !target || props.syncBusy} onClick={() => props.onAnalyze(reference, target)}>{props.syncBusy ? 'Comparing audio…' : 'Find alignment'}</button>

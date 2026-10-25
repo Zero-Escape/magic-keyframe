@@ -55,6 +55,18 @@ jobs:
             Open your existing .mkproj file using File → Open project. Projects reference your original media; keep that footage.
             Use File → Associate .mkproj files with this app to register this portable location; Windows may still require Open with → Always.
 
+            ## Optimization and audio tools (0.7.0)
+            - Event-driven video texture updates; cached waveform peaks and transition lookups; muted lanes stop decoding.
+            - Lower-priority, limited-thread background media jobs; export cancels background audio/proxies.
+            - Visible fade ramps/duration labels on video and audio; green draggable audio fade handles.
+            - Independent compression and quiet/loud passage leveling; Level speech / music preset.
+            - Measure & match selected-section loudness toward -16 LUFS with -1.5 dBTP headroom; Apply to save.
+            - Continuous lossless processed-audio cache shared by preview/export (extra local disk space required).
+            - Custom export range and 30-second sample from playhead; remembered settings; Show in folder.
+            - Restrict encoder fallback to availability errors; preserve completed output if destination is locked.
+            - Reads v1-v4 projects; saves v5. Use Save As to retain a copy for older builds.
+            - Compilation/package inspection only: Windows responsiveness, UI/audio and media output still require hands-on checking.
+
             ## Bounded export and progress (0.6.0)
             - Export settings dialog: resolution, FPS, quality, bitrate ceiling, encoder, audio bitrate and resource mode.
             - Live stage percentage, elapsed/estimated remaining time, encoder status heartbeat and Cancel.
@@ -71,7 +83,7 @@ jobs:
             - Drag adjacent same-track clips into an edge overlap: video cross-dissolve and equal-power audio crossfade.
             - Linked moves preserve offsets. Two-way overlaps only; split outside transition boundaries.
             - All clips stop at zero; legacy negative pre-roll shifts the complete timeline right without changing sync.
-            - Timeline extent expands during dragging. Saving writes v4; use Save As to keep older files.
+            - Timeline extent expands during dragging. Saving now writes v5; use Save As to keep older files.
 
             ## Playback and Windows workflow fixes (0.4.2)
             - Contiguous same-source splits avoid needless seeks; pause/resume no longer seeks by itself.
@@ -96,7 +108,7 @@ jobs:
             - Autosave recovery copies (5-second idle / 30-second periodic, retaining 10 versions per project).
             - 4K / 1080p delivery, both 8-bit H.264/AAC Rec.709 MP4.
 
-            Existing v1/v2/v3 projects open. Saving writes v4; use Save As to retain an old-format copy.
+            Existing v1-v4 projects open. Saving writes v5; use Save As to retain an old-format copy.
             Select a clip and open Effects; draft settings must be applied before they are saved/exported.
             Imports append on track 1; + on a media item adds a copy at the playhead, using a free new track if needed.
             Add tracks with +V / +A; assign clips through the Effects track selector.

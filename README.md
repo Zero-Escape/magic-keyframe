@@ -1,6 +1,6 @@
 # Magic Keyframe
 
-A focused Windows wedding-video editor. **v0.6.0 is an unsigned development/test build,
+A focused Windows wedding-video editor. **v0.7.0 is an unsigned development/test build,
 not a verified client-delivery system.** New editing, DSP, sync, recovery and rendering
 paths need hands-on Windows checking; build/archive checks alone do not prove them.
 
@@ -20,7 +20,7 @@ currently download-and-extract, not automatic in-app updates. Keep your original
 
 Import/drop camera recordings, recorder files and music. Supported extensions include
 MP4, MOV, MXF, WAV, MP3, M4A, AAC, FLAC, OGG and AIFF. The current cap is **200 source
-files and 16 video + 16 audio tracks**. Ten-bit 4:2:2 H.264 sources use FFmpeg-generated
+files and 16 video + 16 audio tracks**.
 Original-media preview is the default. Optional 720p short-GOP proxies can be enabled in the preview toolbar; originals, not proxies, are used for delivery rendering.
 
 - Imports append in sequence on track 1 of their type. Existing media is not replaced.
@@ -95,16 +95,31 @@ immediately (no Effects Apply needed), leave clip placement and the playhead alo
 and make one undo step per drag. Linked audio is not changed. Keyboard-focus a handle
 and use left/right arrows (Shift for ten frames), Home to clear, or End for maximum.
 The same 10-second / half-clip maximum as the Effects controls applies.
+Video and audio fades now have visible ramp lines and duration labels. Audio clips
+have green draggable fade triangles (30-second / half-clip maximum), with the same
+keyboard controls. Shared overlap transitions replace the fades at those edges.
 
 ### Audio
 
-Per-clip gain (−60 to +18 dB), fade-in/out, voice clarity, and spectral noise reduction.
-Voice clarity uses a rumble high-pass, presence EQ and gentle compression/makeup gain.
-Noise reduction uses FFmpeg spectral denoising. This is **not AI voice isolation** and
-cannot reliably remove competing voices/music. Start gently: heavy processing can
-sound watery or unnatural. Voice/noise settings prepare a cached processed audio
-preview on Apply. Gain/fades audition live. The baseline audio preview is AAC; final
-render processing uses the originals. Longer files can take time to prepare.
+Per-clip gain (−60 to +18 dB), audio fades, independent compression/leveling,
+voice clarity and spectral noise reduction are in **Effects → Audio**.
+
+- **Compress loud peaks** narrows dynamic range; **Level quiet / loud passages**
+  gradually brings softer sections up. **Level speech / music** is a starting preset,
+  not a guarantee. Apply, then listen and adjust gently; strong leveling raises room noise.
+- **Measure & match loudness** analyzes the selected clip's source in/out range with
+  the draft processing and gain. It reports integrated LUFS, true peak and loudness
+  range, then adjusts draft gain toward −16 LUFS, limited by −1.5 dBTP headroom.
+  Click **Apply** to save. The reading excludes fades, overlap gains and other tracks.
+  For music/vows at different levels, split into sections and match each separately.
+- Voice clarity is conventional high-pass/presence EQ/compression; noise reduction
+  is spectral denoising. These controls **cannot isolate speech from simultaneous music**.
+- Gain/fades audition live. Other processing is prepared once on **Apply** as a
+  continuous, lossless floating-point audio cache shared by preview and export.
+  Adaptive filters therefore do not restart at each export piece. Baseline preview
+  remains AAC; untreated delivery audio comes from originals. Long-file preparation
+  takes time and disk space (~1.3 GiB/hour per distinct processed stereo setting).
+  Originals are never rewritten; cache files are local, not part of `.mkproj`.
 
 Live track/master meters show levels before the master limiter. Red means reduce gain;
 the limiter is not a substitute for balancing sources. Final audio mixes tracks without
@@ -147,8 +162,8 @@ baseline clears obsolete recovery copies; in-flight writes/cleanup are serialize
 Only committed edits are recovered, not un-applied Effects drafts. Manual saves remain
 useful; this is periodic recovery, not a guarantee against every kind of disk/power loss.
 
-v0.5.0 reads existing v1/v2/v3 projects and upgrades them in memory. Saving writes **v4**
-for overlap transitions and non-negative placements. Older apps cannot open v4; use **Save as** to
+v0.7.0 reads existing v1–v4 projects and upgrades them in memory. Saving writes **v5**
+for the new audio controls. Older apps cannot open v5; use **Save as** to
 keep an old-format copy if needed. Source media and preview caches stay local.
 
 ## Delivery export
@@ -156,7 +171,8 @@ keep an old-format copy if needed. Source media and preview caches stay local.
 Click **Export** to review adjustable settings, then choose a destination and start.
 The default is 1080p, source frame rate, good quality, Auto encoder and Low impact.
 Choose 4K explicitly when required. Both use compatible **8-bit H.264 4:2:0 Rec.709 MP4
-+ 48 kHz stereo AAC**, with fast-start enabled. NVENC is attempted, with x264 fallback.
++ 48 kHz stereo AAC**, with fast-start enabled. Auto attempts NVENC and falls back to limited-thread x264 only for recognized
+encoder-availability failures; decoder/filter/resource errors are surfaced, not retried blindly.
 The render uses a snapshot taken when Export is clicked; later edits do not change it.
 
 Rendering follows actual placements, stacking, mutes, visibility, color and fades.
@@ -164,7 +180,11 @@ Video gaps are black; camera audio follows its clips; other audio can continue a
 video gaps. Export ends at the last clip on either track (including muted/hidden clips),
 so trim unwanted audio tails to avoid black video after the last picture. Mixed camera
 resolutions are letterboxed to the output canvas. Sequence frame rate comes from the
-first used video source in the media library. No export range/cancel queue yet.
+first used video source in the media library. Export the entire timeline or a custom start/end range; **30s sample from playhead**
+quickly selects a short section. Range boundaries round outward to full frames.
+Settings are remembered between sessions (range resets for each dialog). Stage
+progress, elapsed time, estimated remaining time and Cancel remain visible; use
+**Show in folder** after completion. No batch queue or render resume yet.
 
 ## Developers
 
@@ -282,3 +302,17 @@ removed after confirming no export is active.
 Local/Windows compilation and archive checks do not prove Windows peak memory use,
 UI responsiveness, playback accuracy, long-render sync or output quality. These new
 paths still require a hands-on real-media run before client delivery.
+
+## v0.7 optimization notes
+
+Preview texture uploads follow decoded frames instead of refreshing continuously
+while paused. Transition indices, zoomed-out waveform peaks and project fingerprints
+are cached; muted audio lanes stop decoding. Proxy/audio jobs run one at a time per
+pool with lower process priority and explicit thread limits; export stops background
+preview work. This reduces avoidable work, but is not a benchmark or a measured RAM cap.
+If Windows locks the export destination, a completed render is saved under a separate
+recovered filename, or its scratch path is preserved in the error instead of deleted.
+
+See [implementation/research notes](docs/OPTIMIZATION-0.7.md) for tradeoffs and remaining
+runtime checks. Before client delivery, open a copy of the project, export a short
+representative sample, and inspect picture, sync, transitions and audio on Windows.

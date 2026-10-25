@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('magicKey', {
   recoveries: () => ipcRenderer.invoke('project:recoveries'),
   recoverProject: (filePath: string) => ipcRenderer.invoke('project:recover', filePath),
   discardRecovery: (filePath: string | undefined, session: string) => ipcRenderer.invoke('project:discard-recovery', filePath, session),
+  measureAudio: (filePath: string, start: number, end: number, value: unknown) => ipcRenderer.invoke('media:measure-audio', filePath, start, end, value),
   audioPreview: (filePath: string, value: unknown) => ipcRenderer.invoke('media:audio-preview', filePath, value),
   syncAudio: (request: unknown) => ipcRenderer.invoke('media:sync', request),
   saveProject: (project: unknown, filePath?: string) => ipcRenderer.invoke('project:save', project, filePath),
@@ -34,5 +35,6 @@ contextBridge.exposeInMainWorld('magicKey', {
     ipcRenderer.on('media:export-progress', handler)
     return () => ipcRenderer.removeListener('media:export-progress', handler)
   },
+  showExport: () => ipcRenderer.invoke('media:show-export'),
   exportVideo: (request: unknown) => ipcRenderer.invoke('media:export', request),
 })

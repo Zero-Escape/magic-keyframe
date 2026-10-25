@@ -41,9 +41,19 @@ export function validLane(clips: Segment[]) {
   const sorted = ordered(clips)
   return sorted.every((c, i) => c.at >= -1e-7 && (!i || c.at > sorted[i - 1].at + 1e-7 && endAt(c) > endAt(sorted[i - 1]) + 1e-7) && (i < 2 || c.at >= endAt(sorted[i - 2]) - 1e-7))
 }
+const transitions = new WeakMap<Segment[], Map<string, { incoming: number; outgoing: number }>>()
 export function transitionEdges(clips: Segment[], clip: Segment) {
-  const lane = ordered(clips.filter((c) => c.lane === clip.lane)), index = lane.findIndex((c) => c.id === clip.id)
-  return { incoming: index > 0 ? Math.max(0, endAt(lane[index - 1]) - clip.at) : 0, outgoing: index >= 0 && index < lane.length - 1 ? Math.max(0, endAt(clip) - lane[index + 1].at) : 0 }
+  let index = transitions.get(clips)
+  if (!index) {
+    index = new Map(); const lanes = new Map<number, Segment[]>()
+    for (const c of clips) { const lane = lanes.get(c.lane) || []; lane.push(c); lanes.set(c.lane, lane) }
+    for (const lane of lanes.values()) {
+      lane.sort((a, b) => a.at - b.at)
+      lane.forEach((c, i) => index!.set(c.id, { incoming: i ? Math.max(0, endAt(lane[i - 1]) - c.at) : 0, outgoing: i + 1 < lane.length ? Math.max(0, endAt(c) - lane[i + 1].at) : 0 }))
+    }
+    transitions.set(clips, index)
+  }
+  return index.get(clip.id) || { incoming: 0, outgoing: 0 }
 }
 export function transitionGain(clips: Segment[], clip: Segment, time: number) {
   const { incoming, outgoing } = transitionEdges(clips, clip), local = time - clip.at

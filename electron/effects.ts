@@ -1,12 +1,12 @@
 export type ClipEffects = {
   gainDb: number; audioFadeIn: number; audioFadeOut: number
-  vocal: number; noise: number
+  vocal: number; noise: number; compression: number; leveling: number
   exposure: number; contrast: number; saturation: number; temperature: number
   fadeIn: number; fadeOut: number
 }
-export const defaultEffects: ClipEffects = { gainDb: 0, audioFadeIn: 0, audioFadeOut: 0, vocal: 0, noise: 0, exposure: 0, contrast: 1, saturation: 1, temperature: 0, fadeIn: 0, fadeOut: 0 }
+export const defaultEffects: ClipEffects = { gainDb: 0, audioFadeIn: 0, audioFadeOut: 0, vocal: 0, noise: 0, compression: 0, leveling: 0, exposure: 0, contrast: 1, saturation: 1, temperature: 0, fadeIn: 0, fadeOut: 0 }
 export const effectLimits: Record<keyof ClipEffects, [number, number]> = {
-  gainDb: [-60, 18], audioFadeIn: [0, 30], audioFadeOut: [0, 30], vocal: [0, 1], noise: [0, 30], exposure: [-3, 3], contrast: [.5, 2], saturation: [0, 2], temperature: [-1, 1], fadeIn: [0, 10], fadeOut: [0, 10],
+  gainDb: [-60, 18], audioFadeIn: [0, 30], audioFadeOut: [0, 30], vocal: [0, 1], noise: [0, 30], compression: [0, 1], leveling: [0, 1], exposure: [-3, 3], contrast: [.5, 2], saturation: [0, 2], temperature: [-1, 1], fadeIn: [0, 10], fadeOut: [0, 10],
 }
 export function effects(value?: Partial<ClipEffects>): ClipEffects { return { ...defaultEffects, ...value } }
 export function fadeFactor(time: number, duration: number, fadeIn: number, fadeOut: number) {
@@ -17,6 +17,11 @@ export function audioProcessing(e: ClipEffects) {
   const filters: string[] = []
   if (e.noise > 0) filters.push(`afftdn=nr=${e.noise.toFixed(2)}:nf=-40:tn=1`)
   if (e.vocal > 0) filters.push(`highpass=f=80,equalizer=f=250:t=q:w=1:g=${(-2 * e.vocal).toFixed(3)},equalizer=f=3000:t=q:w=1:g=${(4 * e.vocal).toFixed(3)},acompressor=threshold=0.125:ratio=${(1 + 1.5 * e.vocal).toFixed(3)}:attack=10:release=150:makeup=${(1 + .5 * e.vocal).toFixed(3)}`)
+  if (e.compression > 0) filters.push(`acompressor=threshold=0.125:ratio=${(1 + 5 * e.compression).toFixed(3)}:attack=10:release=250:knee=4:detection=rms:makeup=1`)
+  // Continuous source processing is required: the centered smoother looks ahead.
+  // Stereo coupling preserves placement; a -50 dB floor avoids boosting silence.
+  if (e.leveling > 0) filters.push(`dynaudnorm=f=250:g=15:p=0.9:m=${(1 + 7 * e.leveling).toFixed(3)}:r=${(.08 + .07 * e.leveling).toFixed(4)}:n=1:b=1:t=0.003162`)
+  if (e.compression > 0 || e.leveling > 0) filters.push('alimiter=limit=0.95:level=0:latency=1')
   return filters
 }
 export function videoProcessing(e: ClipEffects, duration: number) {

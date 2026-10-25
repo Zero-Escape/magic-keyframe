@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { activeClip, transitionEdges, transitionGain, endAt, type Segment, type TimelineEdit } from '../electron/timeline'
 import { effects, fadeFactor, type ClipEffects } from '../electron/effects'
 import type { MediaItem } from './editor-types'
@@ -7,6 +7,7 @@ export class AudioMixer {
   context = new AudioContext()
   private master = this.context.createAnalyser()
   private limiter = this.context.createDynamicsCompressor()
+  private samples = new WeakMap<AnalyserNode, Float32Array<ArrayBuffer>>()
   private lanes = new Map<string, AnalyserNode>()
   private sources = new WeakMap<HTMLMediaElement, { source: MediaElementAudioSourceNode; gain: GainNode }>()
   constructor() {
@@ -24,7 +25,7 @@ export class AudioMixer {
   peak(lane?: string) {
     const node = lane ? this.lanes.get(lane) : this.master
     if (!node || this.context.state !== 'running') return 0
-    const samples = new Float32Array(node.fftSize); node.getFloatTimeDomainData(samples)
+    let samples = this.samples.get(node); if (!samples) { samples = new Float32Array(node.fftSize); this.samples.set(node, samples) }; node.getFloatTimeDomainData(samples)
     let peak = 0; for (const sample of samples) peak = Math.max(peak, Math.abs(sample)); return peak
   }
 }
@@ -36,16 +37,16 @@ export function Meter({ mixer, lane }: { mixer: AudioMixer | null; lane?: string
 }
 function AudioLane({ clip, item, muted, playing, position, mixer, override, mixGain = 1 }: { clip?: Segment; item?: MediaItem; muted: boolean; playing: boolean; position: number; mixer: AudioMixer | null; override?: Partial<ClipEffects>; mixGain?: number }) {
   const ref = useRef<HTMLAudioElement>(null), [processed, setProcessed] = useState<{ key: string; url: string }>(), [error, setError] = useState('')
-  const fx = effects(override || clip?.effects), processingKey = `${item?.path || ''}:${fx.vocal}:${fx.noise}`
+  const fx = effects(override || clip?.effects), processingKey = `${item?.path || ''}:${fx.vocal}:${fx.noise}:${fx.compression}:${fx.leveling}`
   const gainRef = useRef<GainNode | null>(null), previous = useRef<{ src?: string; wanted: number; playing: boolean; offset: number } | undefined>(undefined), pending = useRef(false)
   const active = useRef({ clip, muted, playing, position, fx, mixGain }); active.current = { clip, muted, playing, position, fx, mixGain }
   useEffect(() => {
-    if (!item?.metadata.audio || !window.magicKey) return
+    if (muted || !item?.metadata.audio || !window.magicKey) return
     let canceled = false; setError('')
-    if (!fx.vocal && !fx.noise && item.audioUrl) { setProcessed({ key: processingKey, url: item.audioUrl }); return }
-    void window.magicKey.audioPreview(item.path, { vocal: fx.vocal, noise: fx.noise }).then((result) => { if (!canceled) setProcessed({ key: processingKey, url: result.url }) }).catch((err) => { if (!canceled) setError(String(err)) })
+    if (!fx.vocal && !fx.noise && !fx.compression && !fx.leveling && item.audioUrl) { setProcessed({ key: processingKey, url: item.audioUrl }); return }
+    void window.magicKey.audioPreview(item.path, { vocal: fx.vocal, noise: fx.noise, compression: fx.compression, leveling: fx.leveling }).then((result) => { if (!canceled) setProcessed({ key: processingKey, url: result.url }) }).catch((err) => { if (!canceled) setError(String(err)) })
     return () => { canceled = true }
-  }, [processingKey, item?.audioUrl])
+  }, [processingKey, item?.audioUrl, muted])
   const ready = processed?.key === processingKey
   const src = ready ? processed.url : undefined
   const lane = `${item?.kind || 'audio'}:${clip?.lane ?? 0}`
@@ -59,7 +60,7 @@ function AudioLane({ clip, item, muted, playing, position, mixer, override, mixG
     const player = ref.current; if (!player) return
     const sync = () => {
       const state = active.current, c = state.clip
-      if (!c || !src) { player.pause(); return }
+      if (!c || !src || state.muted) { player.pause(); return }
       const wanted = c.start + state.position - c.at
       if (Number.isFinite(player.duration) && wanted >= player.duration) { player.pause(); return }
       const prior = previous.current, offset = c.start - c.at
@@ -78,13 +79,14 @@ function AudioLane({ clip, item, muted, playing, position, mixer, override, mixG
     sync(); player.addEventListener('loadedmetadata', sync); player.addEventListener('canplay', sync); player.addEventListener('seeked', sync)
     return () => { player.removeEventListener('loadedmetadata', sync); player.removeEventListener('canplay', sync); player.removeEventListener('seeked', sync) }
   }, [clip?.id, position, muted, playing, src, fx.gainDb, fx.audioFadeIn, fx.audioFadeOut, mixer, mixGain])
-  return <><audio ref={ref} src={src} preload="auto" />{clip && item?.metadata.audio && (!ready || error) && <span className="audio-preparing">{error ? `Audio preview failed: ${error}` : 'Preparing audio preview…'}</span>}</>
+  return <><audio ref={ref} src={src} preload="auto" />{!muted && clip && item?.metadata.audio && (!ready || error) && <span className="audio-preparing">{error ? `Audio preview failed: ${error}` : 'Preparing audio preview…'}</span>}</>
 }
 function VideoSurface({ clip, src, playing, position, override, fps, onDecoded }: { clip: Segment; src: string; playing: boolean; position: number; override?: Partial<ClipEffects>; fps: number; onDecoded: () => void }) {
   const [fallback, setFallback] = useState(false), [decodeError, setDecodeError] = useState(false)
   useEffect(() => setDecodeError(false), [src])
   const videoRef = useRef<HTMLVideoElement>(null), canvasRef = useRef<HTMLCanvasElement>(null), pending = useRef(false), previous = useRef<{ src: string; wanted: number; offset: number } | undefined>(undefined)
-  const decoded = useRef('')
+  const decoded = useRef(''), redraw = useRef<() => void>(() => {})
+  useEffect(() => { redraw.current() }, [position, override, clip, src])
   const state = useRef({ clip, playing, position, override, src, fps, onDecoded }); state.current = { clip, playing, position, override, src, fps, onDecoded }
   useEffect(() => {
     const video = videoRef.current; if (!video) return
@@ -116,18 +118,21 @@ function VideoSurface({ clip, src, playing, position, override, fps, onDecoded }
     const location = gl.getAttribLocation(program, 'p'); gl.enableVertexAttribArray(location); gl.vertexAttribPointer(location, 2, gl.FLOAT, false, 0, 0)
     const texture = gl.createTexture()!; gl.bindTexture(gl.TEXTURE_2D, texture); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
     gl.uniform1i(gl.getUniformLocation(program, 'image'), 0)
-    let frame = 0, hasTexture = false, aspect = 16 / 9
+    let frame = 0, callback = 0, disposed = false, hasTexture = false, aspect = 16 / 9, uploadedTime = -1, uploadedSource = '', needsUpload = true
     const draw = () => {
       if (gl.isContextLost()) { setFallback(true); return }
       gl.viewport(0, 0, canvas.width, canvas.height); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT)
       // Keep drawing the last decoded texture through short seeks/buffering.
       // Only intentional timeline gaps (handled by Preview) should go black.
-      if (video.readyState >= 2 && video.videoWidth && !video.seeking) {
+      if (video.readyState >= 2 && video.videoWidth && !video.seeking && (needsUpload || video.currentSrc !== uploadedSource || typeof video.requestVideoFrameCallback !== 'function' && video.currentTime !== uploadedTime)) {
         try {
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video); hasTexture = true; aspect = video.videoWidth / video.videoHeight
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video); hasTexture = true; needsUpload = false; uploadedTime = video.currentTime; uploadedSource = video.currentSrc; aspect = video.videoWidth / video.videoHeight
+
+        } catch { setFallback(true); return }
+      }
+      if (hasTexture && video.readyState >= 2 && !video.seeking) {
           const s = state.current, key = `${s.clip.id}:${s.src}:${s.clip.start - s.clip.at}`
           if (decoded.current !== key && Math.abs(video.currentTime - (s.clip.start + s.position - s.clip.at)) < .4) { decoded.current = key; s.onDecoded() }
-        } catch { setFallback(true); return }
       }
       if (hasTexture) {
         const s = state.current, e = effects(s.override || s.clip.effects), gain = 2 ** e.exposure, d = s.clip.end - s.clip.start
@@ -138,10 +143,16 @@ function VideoSurface({ clip, src, playing, position, override, fps, onDecoded }
         gl.uniform1f(gl.getUniformLocation(program, 'fade'), fadeFactor(s.position - s.clip.at, d, Math.min(e.fadeIn, d / 2), Math.min(e.fadeOut, d / 2)))
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
       }
-      frame = requestAnimationFrame(draw)
+      frame = 0
     }
-    frame = requestAnimationFrame(draw)
-    return () => { cancelAnimationFrame(frame); video.pause(); gl.deleteTexture(texture); gl.deleteBuffer(buffer); gl.deleteProgram(program); gl.deleteShader(vert); gl.deleteShader(frag) }
+    const queue = () => { if (!disposed && !frame) frame = requestAnimationFrame(draw) }
+    redraw.current = queue
+    const decodedFrame = () => { needsUpload = true; queue(); if (!disposed) callback = video.requestVideoFrameCallback(decodedFrame) }
+    if (typeof video.requestVideoFrameCallback === 'function') callback = video.requestVideoFrameCallback(decodedFrame)
+    const events = ['loadeddata', 'seeked', 'timeupdate', 'pause', 'playing']
+    const refresh = (event: Event) => { if (event.type === 'loadeddata' || event.type === 'seeked') needsUpload = true; queue() }
+    events.forEach((event) => video.addEventListener(event, refresh)); queue()
+    return () => { disposed = true; redraw.current = () => {}; events.forEach((event) => video.removeEventListener(event, refresh)); if (callback) video.cancelVideoFrameCallback(callback); cancelAnimationFrame(frame); video.pause(); gl.deleteTexture(texture); gl.deleteBuffer(buffer); gl.deleteProgram(program); gl.deleteShader(vert); gl.deleteShader(frag) }
   }, [])
   const displayed = effects(override || clip.effects), d = clip.end - clip.start
   return <><video ref={videoRef} className={fallback ? 'fallback-decoder' : 'preview-decoder'} style={fallback ? { filter: `brightness(${2 ** displayed.exposure}) contrast(${displayed.contrast}) saturate(${displayed.saturation})`, opacity: fadeFactor(position - clip.at, d, Math.min(displayed.fadeIn, d / 2), Math.min(displayed.fadeOut, d / 2)) } : undefined} src={src} muted playsInline preload="auto" onError={() => { setDecodeError(true); state.current.onDecoded() }} />{decodeError && <div className="source-decode-error">This source format cannot play directly in the browser. Enable optional proxies in the toolbar to preview it; your original footage is unchanged.</div>}{fallback && <span className="audio-preparing">Compatibility preview: warmth is export-only without WebGL.</span>}<canvas className={`graded-preview ${fallback ? 'hidden' : ''}`} ref={canvasRef} width={1280} height={720} /></>
@@ -164,7 +175,7 @@ function AudioTrack({ clips, media, lane, playing, position, mixer, draft }: { c
   const slots = useDecoderSlots(upcoming ? [...active, upcoming] : active, position)
   return <>{slots.map((slot, i) => {
     const clip = slot.active ? slot.clip : undefined, item = clip && media.find((m) => m.id === clip.mediaId)
-    const stored = effects(clip?.effects), proposed = draft && clip?.id === draft.id ? { ...draft.value, vocal: stored.vocal, noise: stored.noise } : stored
+    const stored = effects(clip?.effects), proposed = draft && clip?.id === draft.id ? { ...draft.value, vocal: stored.vocal, noise: stored.noise, compression: stored.compression, leveling: stored.leveling } : stored
     const blend = clip ? transitionEdges(clips, clip) : { incoming: 0, outgoing: 0 }
     return <AudioLane key={i} clip={clip} item={item} muted={lane.muted} playing={playing && slot.active && !!clip && position >= clip.at} position={clip ? Math.max(position, clip.at) : position} mixer={mixer} override={{ ...proposed, audioFadeIn: blend.incoming ? 0 : proposed.audioFadeIn, audioFadeOut: blend.outgoing ? 0 : proposed.audioFadeOut }} mixGain={clip && position >= clip.at ? transitionGain(clips, clip, position) : 0} />
   })}</>
@@ -174,6 +185,7 @@ export function Preview({ edit, media, proxies, playing, position, mixer, draft 
   const active = visible.filter((c) => c.lane === visible[0]?.lane)
   const upcoming = active.length === 1 ? edit.video.filter((c) => c.lane === active[0].lane && c.at > position && c.at - position <= 1).sort((a, b) => a.at - b.at)[0] : undefined
   const slots = useDecoderSlots(upcoming ? [...active, upcoming] : active, position), [decodedSlots, setDecodedSlots] = useState<Record<number, string>>({})
+  const audioTracks = useMemo(() => (['video', 'audio'] as const).flatMap((kind) => edit.lanes[kind].map((lane, index) => ({ key: `${kind}:${index}`, lane, clips: edit[kind].filter((c) => c.lane === index) }))), [edit])
   return <div className="viewer studio-viewer">
     {slots.map((slot, i) => {
       const clip = slot.clip, item = clip && media.find((m) => m.id === clip.mediaId), src = item && proxies[item.id]
@@ -185,6 +197,6 @@ export function Preview({ edit, media, proxies, playing, position, mixer, draft 
     })}
     {!active.length && <div className="viewer-empty">{media.length ? 'No visible video at this position' : 'Import your footage to begin'}</div>}
     {active.some((c) => !proxies[c.mediaId]) && <div className="viewer-empty">Preparing optional video proxy…</div>}
-    {(['video', 'audio'] as const).flatMap((kind) => edit.lanes[kind].map((lane, index) => <AudioTrack key={`${kind}:${index}`} clips={edit[kind].filter((c) => c.lane === index)} media={media} lane={lane} playing={playing} position={position} mixer={mixer} draft={draft} />))}
+    {audioTracks.map(({ key, lane, clips }) => <AudioTrack key={key} clips={clips} media={media} lane={lane} playing={playing} position={position} mixer={mixer} draft={draft} />)}
   </div>
 }

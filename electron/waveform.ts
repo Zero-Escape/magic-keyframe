@@ -1,15 +1,17 @@
 import { spawn } from 'node:child_process'
+import { constants, setPriority } from 'node:os'
 export type WaveformData = { bucketSeconds: number; channels: { min: number[]; max: number[] }[] }
 // Streaming signed stereo envelopes: 5 ms bins, no mono phase cancellation and no
 // per-file normalization. Raw PCM is discarded as it arrives, not held in memory.
 export function analyzeWaveform(executable: string, file: string, channels: number): Promise<WaveformData> {
   const count = Math.max(1, Math.min(2, channels || 1)), rate = 24000, bucket = 120
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, ['-v', 'error', '-i', file, '-vn', '-map', '0:a:0', '-ac', String(count), '-ar', String(rate), '-f', 'f32le', '-acodec', 'pcm_f32le', 'pipe:1'], { windowsHide: true })
+    const child = spawn(executable, ['-nostdin', '-threads', '1', '-filter_threads', '1', '-v', 'error', '-i', file, '-vn', '-map', '0:a:0', '-ac', String(count), '-ar', String(rate), '-f', 'f32le', '-acodec', 'pcm_f32le', '-threads:a', '1', 'pipe:1'], { windowsHide: true })
+    if (child.pid) { try { setPriority(child.pid, constants.priority.PRIORITY_BELOW_NORMAL) } catch { /* Best effort. */ } }
     const data: WaveformData = { bucketSeconds: bucket / rate, channels: Array.from({ length: count }, () => ({ min: [], max: [] })) }
     let pending = Buffer.alloc(0), frames = 0, errors = ''
-    let lows = Array(count).fill(Infinity), highs = Array(count).fill(-Infinity)
-    const flush = () => { data.channels.forEach((c, i) => { c.min.push(Math.round(lows[i] * 1e5) / 1e5); c.max.push(Math.round(highs[i] * 1e5) / 1e5) }); lows = Array(count).fill(Infinity); highs = Array(count).fill(-Infinity); frames = 0 }
+    const lows = new Float32Array(count).fill(Infinity), highs = new Float32Array(count).fill(-Infinity)
+    const flush = () => { data.channels.forEach((c, i) => { c.min.push(Math.round(lows[i] * 1e5) / 1e5); c.max.push(Math.round(highs[i] * 1e5) / 1e5) }); lows.fill(Infinity); highs.fill(-Infinity); frames = 0 }
     child.stdout.on('data', (chunk: Buffer) => {
       const bytes = pending.length ? Buffer.concat([pending, chunk]) : chunk
       const length = bytes.length - bytes.length % (count * 4)

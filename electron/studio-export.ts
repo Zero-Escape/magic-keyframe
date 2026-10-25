@@ -1,13 +1,13 @@
 import { effects, audioProcessing, videoProcessing } from './effects.js'
 import { endAt, timelineEnd, transitionEdges, type TimelineEdit, type Segment } from './timeline.js'
-export type RenderMedia = { id: string; path: string; audio: boolean; video: boolean; seek?: number; stop?: number }
+export type RenderMedia = { id: string; path: string; audio: boolean; video: boolean; seek?: number; stop?: number; audioFor?: string; processed?: boolean }
 export function buildStudioExport(edit: TimelineEdit, media: RenderMedia[], width: number, height: number, fps: number, window?: { start: number; duration: number }) {
   const start = window?.start || 0, duration = window?.duration || timelineEnd(edit), finish = start + duration, filters: string[] = [], videoLabels = new Map<string, string>(), audioLabels = new Map<string, string>()
   if (!Number.isFinite(duration) || duration <= 0) throw new Error('The timeline is empty.')
   const visible = edit.video.filter((c) => !edit.lanes.video[c.lane].hidden && endAt(c) > start && c.at < finish && media.find((m) => m.id === c.mediaId)?.video)
-  const audible = [...edit.video.filter((c) => !edit.lanes.video[c.lane].muted), ...edit.audio.filter((c) => !edit.lanes.audio[c.lane].muted)].filter((c) => endAt(c) > start && c.at < finish && media.find((m) => m.id === c.mediaId)?.audio)
+  const audible = [...edit.video.filter((c) => !edit.lanes.video[c.lane].muted), ...edit.audio.filter((c) => !edit.lanes.audio[c.lane].muted)].filter((c) => endAt(c) > start && c.at < finish && media.some((m) => m.audio && (m.audioFor ? m.audioFor === c.id : m.id === c.mediaId)))
   media.forEach((item, input) => {
-    const v = visible.filter((c) => c.mediaId === item.id), a = audible.filter((c) => c.mediaId === item.id)
+    const v = item.video ? visible.filter((c) => c.mediaId === item.id) : [], a = item.audio ? audible.filter((c) => item.audioFor ? item.audioFor === c.id : c.mediaId === item.id) : []
     if (v.length) {
       const names = v.map((c, i) => { const label = `vs${input}_${i}`; videoLabels.set(c.id, label); return `[${label}]` })
       filters.push(`[${input}:v]${window ? 'null' : 'setpts=PTS-STARTPTS'},split=${v.length}${names.join('')}`)
@@ -37,8 +37,9 @@ export function buildStudioExport(edit: TimelineEdit, media: RenderMedia[], widt
   const labels: string[] = []
   audible.forEach((c: Segment, i) => {
     const track = edit.video.some((v) => v.id === c.id) ? edit.video : edit.audio, blend = transitionEdges(track, c)
-    const seek = window ? media.find((m) => m.id === c.mediaId)?.seek || 0 : 0, from = Math.max(start, c.at), to = Math.min(finish, endAt(c))
-    const stored = effects(c.effects), e = { ...stored, audioFadeIn: blend.incoming ? 0 : stored.audioFadeIn, audioFadeOut: blend.outgoing ? 0 : stored.audioFadeOut }, d = c.end - c.start, chain = [`atrim=start=${Math.max(0, c.start - seek).toFixed(6)}:end=${(c.end - seek).toFixed(6)}`, window ? `asetpts=PTS+${(seek - c.start).toFixed(6)}/TB` : 'asetpts=PTS-STARTPTS', 'aresample=48000', 'aformat=channel_layouts=stereo', ...audioProcessing(e), `volume=${(10 ** (e.gainDb / 20)).toFixed(8)}`]
+    const input = media.find((m) => m.audioFor === c.id) || media.find((m) => m.id === c.mediaId && m.audio)
+    const seek = window ? input?.seek || 0 : 0, from = Math.max(start, c.at), to = Math.min(finish, endAt(c))
+    const stored = effects(c.effects), e = { ...stored, audioFadeIn: blend.incoming ? 0 : stored.audioFadeIn, audioFadeOut: blend.outgoing ? 0 : stored.audioFadeOut }, d = c.end - c.start, chain = [`atrim=start=${Math.max(0, c.start - seek).toFixed(6)}:end=${(c.end - seek).toFixed(6)}`, window ? `asetpts=PTS+${(seek - c.start).toFixed(6)}/TB` : 'asetpts=PTS-STARTPTS', 'aresample=48000', 'aformat=channel_layouts=stereo', ...(input?.processed ? [] : audioProcessing(e)), `volume=${(10 ** (e.gainDb / 20)).toFixed(8)}`]
     if (blend.incoming) chain.push(`afade=t=in:st=0:d=${blend.incoming.toFixed(6)}:curve=qsin`)
     if (blend.outgoing) chain.push(`afade=t=out:st=${(d - blend.outgoing).toFixed(6)}:d=${blend.outgoing.toFixed(6)}:curve=qsin`)
     if (e.audioFadeIn > 0) chain.push(`afade=t=in:st=0:d=${Math.min(e.audioFadeIn, d / 2).toFixed(6)}`)

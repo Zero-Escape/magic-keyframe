@@ -162,3 +162,13 @@ button { font: inherit; color: inherit; }
 .export-resource-note { padding:12px; font-size:12px; line-height:1.6; background:#251d32; border-radius:8px; color:#d2c3e6; }
 .export-dialog progress { width:100%; height:18px; accent-color:#ae7bf3; }.export-progress-message { font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
 .export-statistics { display:flex; flex-wrap:wrap; gap:14px; margin-top:10px; font-size:12px; color:#c5bbd2; }.export-output { overflow-wrap:anywhere; font-size:12px; }
+
+/* Fade shape stays visible above the waveform, without intercepting clip drags. */
+.fade-ramp { position:absolute; top:20px; bottom:0; z-index:4; pointer-events:none; min-width:2px; color:#ffe5a3; }
+.fade-ramp.in { left:0; }.fade-ramp.out { right:0; }
+.fade-ramp.audio { color:#76f2d1; }
+.fade-ramp svg { position:absolute; width:100%; height:100%; overflow:visible; }
+.fade-ramp polygon { fill:currentColor; opacity:.18; }.fade-ramp path { fill:none; stroke:currentColor; stroke-width:1.5; vector-effect:non-scaling-stroke; }
+.fade-ramp span { position:absolute; bottom:2px; left:3px; background:#111018de; border-radius:3px; padding:1px 3px; font-size:9px; white-space:nowrap; }
+.fade-ramp.out span { left:auto; right:3px; }.audio-clip .fade-triangle { background:#76f2d1; }
+.loudness-reading { padding:8px; background:#172b29; border:1px solid #32655b; border-radius:5px; color:#b1efdf; font-size:11px; line-height:1.5; }
