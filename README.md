@@ -1,6 +1,6 @@
 # Magic Keyframe
 
-A focused Windows wedding-video editor. **v0.4.0 is an unsigned development/test build,
+A focused Windows wedding-video editor. **v0.4.1 is an unsigned development/test build,
 not a verified client-delivery system.** New editing, DSP, sync, recovery and rendering
 paths need hands-on Windows checking; build/archive checks alone do not prove them.
 
@@ -82,6 +82,15 @@ Fade-in, fade-out and both presets transition **from/to black**, with adjustable
 durations. Fades are clamped to half the clip duration so opposing fades cannot exceed
 the clip. These are not overlapping cross-dissolves. Splitting retains outer fades
 and clears newly created inner-edge fades; refine durations afterward if needed.
+
+Video clips also have small gold **triangles along their top edge**. Drag the left
+triangle right to fade in from black; drag the right triangle left to fade out to
+black. Drag back toward the respective edge to remove the fade. The duration appears
+while dragging; zoom in on the timeline for precise placement. These handles apply
+immediately (no Effects Apply needed), leave clip placement and the playhead alone,
+and make one undo step per drag. Linked audio is not changed. Keyboard-focus a handle
+and use left/right arrows (Shift for ten frames), Home to clear, or End for maximum.
+The same 10-second / half-clip maximum as the Effects controls applies.
 
 ### Audio
 

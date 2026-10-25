@@ -55,7 +55,13 @@ jobs:
             Open your existing .mkproj file using File → Open project. Projects reference your original media; keep that footage.
             The portable build does not register Windows file associations automatically.
 
-            ## Studio workflow upgrade
+            ## Direct timeline video fades
+            - Gold triangles at the top of video clips: drag inward for fade-from/to-black, outward to remove.
+            - Duration readout while dragging; zoom in for precise adjustments.
+            - Applies immediately, saves with the project, and makes one undo step per drag.
+            - Does not move clips, the playhead, or change linked audio fades.
+
+            ## Studio workflow
             - Multiple camera/recorder/music sources, with up to 16 video and 16 audio tracks.
             - Media / Effects tabs; per-clip gain, audio fades, speech EQ/compression and spectral noise reduction.
             - Basic SDR exposure, contrast, saturation and warmth; fades from/to black.

@@ -42,6 +42,8 @@ export default function App() {
   const tracksRef = useRef<HTMLDivElement>(null), viewportRef = useRef<HTMLDivElement>(null), dragDepth = useRef(0), scrubbing = useRef(false)
   const clipDrag = useRef<{ x: number; scroll: number; base: Snapshot; ids: string[]; moved: boolean; scale: number; collapse?: string[] } | null>(null)
   const trimDrag = useRef<{ kind: Track; id: string; edge: 'start' | 'end'; moved: boolean } | null>(null)
+  const fadeDrag = useRef<{ id: string; edge: 'fadeIn' | 'fadeOut'; x: number; scroll: number; scale: number; initial: number; max: number; base: Snapshot; moved: boolean } | null>(null)
+  const [activeFade, setActiveFade] = useState<string | null>(null)
   const resizing = useRef<{ kind: 'sidebar' | 'timeline'; initial: number; x: number; y: number } | null>(null)
   const fp = fingerprint(state), dirty = fp !== savedFingerprint, projectDuration = timelineEnd(edit)
   const timelineDuration = dragDuration ?? Math.max(projectDuration, 1)
@@ -61,7 +63,7 @@ export default function App() {
   const record = (snapshot = state) => { setUndoStack((items) => [...items.slice(-99), snapshot]); setRedoStack([]) }
   const commit = (next: Snapshot, pause = true) => { if (fingerprint(next) === fp) return; if (pause) stop(); record(); setState(next) }
   const commitEdit = (next: TimelineEdit, pause = true) => commit({ media, edit: next }, pause)
-  const restore = (next: Snapshot) => { stop(); setState(next); setSelection([]); setFocusId(''); setActiveLane({ kind: 'video', lane: 0 }); setDraft(undefined); setCandidate(null); clipDrag.current = null; trimDrag.current = null; setDragDuration(null) }
+  const restore = (next: Snapshot) => { stop(); setState(next); setSelection([]); setFocusId(''); setActiveLane({ kind: 'video', lane: 0 }); setDraft(undefined); setCandidate(null); clipDrag.current = null; trimDrag.current = null; fadeDrag.current = null; setActiveFade(null); setDragDuration(null) }
   const undo = () => { if (!undoStack.length) return; setRedoStack((s) => [...s, state]); restore(undoStack.at(-1)!); setUndoStack((s) => s.slice(0, -1)) }
   const redo = () => { if (!redoStack.length) return; setUndoStack((s) => [...s, state]); restore(redoStack.at(-1)!); setRedoStack((s) => s.slice(0, -1)) }
   const draftChanged = useCallback((value?: { id: string; value: ClipEffects }) => setDraft(value), [])
@@ -331,10 +333,37 @@ export default function App() {
     const value = Number(trimDraft[edge]); if (!Number.isFinite(value)) return
     commitEdit(trimClip(edit, selected.id, edge, Math.round(value * fps) / fps, selectedMedia.metadata.duration, frame))
   }
+  const beginFade = (event: React.PointerEvent, clip: Segment, edge: 'fadeIn' | 'fadeOut') => {
+    if (event.button !== 0) return
+    event.preventDefault(); event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId)
+    setSelection(linkedSelection(edit, [clip.id])); setFocusId(clip.id); setActiveLane({ kind: 'video', lane: clip.lane })
+    const max = Math.min(10, (clip.end - clip.start) / 2)
+    fadeDrag.current = { id: clip.id, edge, x: event.clientX, scroll: viewportRef.current?.scrollLeft || 0, scale: timelineDuration / tracksRef.current!.clientWidth, initial: Math.min(max, effects(clip.effects)[edge]), max, base: state, moved: false }
+    setActiveFade(`${clip.id}:${edge}`)
+  }
+  const moveFade = (event: React.PointerEvent) => {
+    event.stopPropagation(); const drag = fadeDrag.current; if (!drag) return
+    const pixels = event.clientX - drag.x + (viewportRef.current?.scrollLeft || 0) - drag.scroll
+    if (!drag.moved && Math.abs(pixels) < 3) return
+    const value = Math.max(0, Math.min(drag.max, drag.initial + Math.round(pixels * drag.scale * (drag.edge === 'fadeIn' ? 1 : -1) * fps) / fps))
+    const clip = drag.base.edit.video.find((c) => c.id === drag.id); if (!clip || (!drag.moved && value === effects(clip.effects)[drag.edge])) return
+    if (!drag.moved) { stop(); record(drag.base); drag.moved = true }
+    setState({ ...drag.base, edit: { ...drag.base.edit, video: drag.base.edit.video.map((c) => c.id === drag.id ? { ...c, effects: { ...c.effects, [drag.edge]: value } } : c) } })
+  }
+  const endFade = (event: React.PointerEvent) => { event.stopPropagation(); fadeDrag.current = null; setActiveFade(null) }
+  const keyFade = (event: React.KeyboardEvent, clip: Segment, edge: 'fadeIn' | 'fadeOut') => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault(); event.stopPropagation()
+    if (fadeDrag.current) return
+    const max = Math.min(10, (clip.end - clip.start) / 2), current = Math.min(max, effects(clip.effects)[edge])
+    const delta = (event.key === 'ArrowRight' ? 1 : -1) * (edge === 'fadeIn' ? 1 : -1) * frame * (event.shiftKey ? 10 : 1)
+    const value = event.key === 'Home' ? 0 : event.key === 'End' ? max : Math.max(0, Math.min(max, current + delta))
+    commitEdit({ ...edit, video: edit.video.map((c) => c.id === clip.id ? { ...c, effects: { ...c.effects, [edge]: value } } : c) })
+  }
   const changeZoom = (value: number) => { setZoom(value); requestAnimationFrame(() => { const node = viewportRef.current; if (node && tracksRef.current) node.scrollLeft = position / timelineDuration * tracksRef.current.clientWidth - node.clientWidth / 2 }) }
   useEffect(() => {
     const node = viewportRef.current, surface = node?.closest('.timeline-scroll'); if (!node || !surface) return
-    const wheel = (event: Event) => { const e = event as WheelEvent; if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return; e.preventDefault(); if (clipDrag.current || trimDrag.current) return; const bounds = node.getBoundingClientRect(), anchor = Math.max(0, Math.min(node.clientWidth, e.clientX - bounds.left)), fraction = (node.scrollLeft + anchor) / (node.clientWidth * zoom / 100), delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? node.clientHeight : 1), next = Math.max(100, Math.min(4000, zoom * Math.exp(-delta * .002))); setZoom(next); requestAnimationFrame(() => { node.scrollLeft = fraction * node.clientWidth * next / 100 - anchor }) }
+    const wheel = (event: Event) => { const e = event as WheelEvent; if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return; e.preventDefault(); if (clipDrag.current || trimDrag.current || fadeDrag.current) return; const bounds = node.getBoundingClientRect(), anchor = Math.max(0, Math.min(node.clientWidth, e.clientX - bounds.left)), fraction = (node.scrollLeft + anchor) / (node.clientWidth * zoom / 100), delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? node.clientHeight : 1), next = Math.max(100, Math.min(4000, zoom * Math.exp(-delta * .002))); setZoom(next); requestAnimationFrame(() => { node.scrollLeft = fraction * node.clientWidth * next / 100 - anchor }) }
     surface.addEventListener('wheel', wheel, { passive: false }); return () => surface.removeEventListener('wheel', wheel)
   }, [zoom])
   const beginResize = (event: React.PointerEvent, kind: 'sidebar' | 'timeline') => { event.currentTarget.setPointerCapture(event.pointerId); resizing.current = { kind, initial: kind === 'sidebar' ? sidebarWidth : timelineHeight, x: event.clientX, y: event.clientY } }
@@ -349,6 +378,12 @@ export default function App() {
       <div className="clip-title"><strong>{clip.linkId && <Link2 size={11} />}{item.name}</strong><small>{clock(clip.start)} → {clock(clip.end)} {Object.entries(e).some(([key, val]) => val !== defaultEffects[key as keyof ClipEffects]) && ' · FX'}</small></div>
       {(kind === 'video' ? e.fadeIn : e.audioFadeIn) > 0 && <i className="fade-marker in" style={{ width: `${Math.min(.5, (kind === 'video' ? e.fadeIn : e.audioFadeIn) / d) * 100}%` }} />}
       {(kind === 'video' ? e.fadeOut : e.audioFadeOut) > 0 && <i className="fade-marker out" style={{ width: `${Math.min(.5, (kind === 'video' ? e.fadeOut : e.audioFadeOut) / d) * 100}%` }} />}
+      {kind === 'video' && (['fadeIn', 'fadeOut'] as const).map((edge) => {
+        const value = Math.min(e[edge], 10, d / 2), label = edge === 'fadeIn' ? 'Fade from black' : 'Fade to black', active = activeFade === `${clip.id}:${edge}`
+        return <button key={edge} type="button" role="slider" aria-label={`${label}: ${item.name}`} aria-valuemin={0} aria-valuemax={Math.min(10, d / 2)} aria-valuenow={value} aria-valuetext={`${value.toFixed(2)} seconds`} title={`${label}: ${value.toFixed(2)}s — drag inward to add, outward to remove; Home resets`} className={`video-fade-handle ${edge === 'fadeIn' ? 'in' : 'out'} ${active ? 'adjusting' : ''}`} style={{ [edge === 'fadeIn' ? 'left' : 'right']: `clamp(10px, calc(${value / d * 100}% - 16px), calc(100% - 26px))` }} onPointerDown={(event) => beginFade(event, clip, edge)} onPointerMove={moveFade} onPointerUp={endFade} onPointerCancel={endFade} onLostPointerCapture={endFade} onKeyDown={(event) => keyFade(event, clip, edge)}>
+          <span className="fade-triangle" />{active && <span className="fade-duration">{value.toFixed(2)}s</span>}
+        </button>
+      })}
       <span className="trim-handle right" title="Trim source end" onPointerDown={(event) => beginTrim(event, kind, clip, 'end')} onPointerMove={moveTrim} onPointerUp={() => { trimDrag.current = null }} onPointerCancel={() => { trimDrag.current = null }} />
     </div>
   }
@@ -367,7 +402,7 @@ export default function App() {
     <section className="timeline-panel panel"><div className="timeline-resizer" onPointerDown={(e) => beginResize(e, 'timeline')} onPointerMove={moveResize} onPointerUp={() => { resizing.current = null }} onPointerCancel={() => { resizing.current = null }} /><div className="timeline-tools"><div className="tool-group"><span className="tool active">{selection.length} selected</span><button className="tool" disabled={!canSplit} onClick={split}><Scissors size={15} />Split</button><button className="tool" disabled={!selection.length} onClick={remove}><Trash2 size={15} />Remove</button><button className="tool" disabled={!canLink} onClick={() => changeLinks(false)}><Link2 size={15} />Link</button><button className="tool" disabled={!canUnlink} onClick={() => changeLinks(true)}><Unlink2 size={15} />Unlink</button></div><div className="edit-controls"><div className="align-controls"><button disabled={!selection.length} onClick={() => nudge(-frame)}>−1 frame</button><button disabled={!selection.length} onClick={() => nudge(frame)}>+1 frame</button></div><div className="trim-inputs">{(['start', 'end'] as const).map((edge) => <label key={edge}>{edge === 'start' ? 'IN' : 'OUT'}<input type="number" step={frame} aria-label={`${edge} source seconds`} disabled={!selected} value={trimDraft[edge]} onChange={(e) => setTrimDraft((s) => ({ ...s, [edge]: e.target.value }))} onBlur={() => trimInput(edge)} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }} /></label>)}</div></div><div className="zoom"><button title="Add video track" onClick={() => addLane('video')}>+ V</button><button title="Add audio track" onClick={() => addLane('audio')}>+ A</button><button onClick={() => changeZoom(100)}>Fit</button><input aria-label="Timeline zoom" type="range" min="100" max="4000" step="50" value={zoom} onChange={(e) => changeZoom(Number(e.target.value))} /></div></div>
       <div className="timeline-scroll"><div className="timeline-content"><div className="track-labels"><div className="ruler-spacer" />{rows.map(({ kind, lane, index }) => <div key={`${kind}:${index}`} className={`track-header ${activeLane.kind === kind && activeLane.lane === index ? 'selected-track' : ''}`} onClick={() => selectLane(kind, index)}><button className="track-select">{kind === 'video' ? <Video size={13} /> : <AudioLines size={13} />}<span>{lane.name.toUpperCase()}</span></button><div className="lane-controls"><div className="track-switches"><button title={`${lane.muted ? 'Unmute' : 'Mute'} ${lane.name}`} aria-pressed={lane.muted} className={lane.muted ? 'switch-off' : ''} onClick={(e) => { e.stopPropagation(); setLaneFlag(kind, index, 'muted') }}>{lane.muted ? <VolumeX size={13} /> : <Volume2 size={13} />}</button>{kind === 'video' && <button title={`${lane.hidden ? 'Show' : 'Hide'} ${lane.name}`} aria-pressed={lane.hidden} onClick={(e) => { e.stopPropagation(); setLaneFlag(kind, index, 'hidden') }}>{lane.hidden ? <EyeOff size={13} /> : <Eye size={13} />}</button>}</div><Meter mixer={mixer} lane={`${kind}:${index}`} /></div></div>)}</div>
       <div className="track-viewport" ref={viewportRef} style={{ height: `${30 + rows.length * 86 + 14}px` }}><div className="tracks" ref={tracksRef} style={{ width: `${zoom}%`, minHeight: `${30 + rows.length * 86}px` }}><div className="ruler" onPointerDown={beginScrub} onPointerMove={moveScrub} onPointerUp={() => { scrubbing.current = false }} onPointerCancel={() => { scrubbing.current = false }}>{Array.from({ length: Math.min(200, Math.max(7, Math.round(7 * zoom / 100))) }, (_, i) => i).map((_, i, list) => <span key={i} style={{ left: `${i / (list.length - 1) * 100}%` }}>{clock(i / (list.length - 1) * timelineDuration)}<i /></span>)}</div><div className="playhead" style={{ left: `${Math.min(100, position / timelineDuration * 100)}%` }}><i /></div>{rows.map(({ kind, lane, index }) => <div key={`${kind}:${index}`} className={`track ${kind}-track ${lane.hidden ? 'track-disabled' : ''}`} onPointerDown={(event) => { setActiveLane({ kind, lane: index }); beginScrub(event) }} onPointerMove={moveScrub} onPointerUp={() => { scrubbing.current = false }} onPointerCancel={() => { scrubbing.current = false }}>{edit[kind].filter((c) => c.lane === index).map((c) => renderClip(kind, c))}</div>)}</div></div></div></div>
-      <div className="timeline-help">Ctrl/Shift+click: multi-select · Drag: move · Link preserves sync · Effects: track assignment, color, audio, fades and sync · Wheel: zoom</div>
+      <div className="timeline-help">Ctrl/Shift+click: multi-select · Drag: move · Top triangles: video fades · Link preserves sync · Effects: color, audio and sync · Wheel: zoom</div>
     </section>
   </main>
 }
