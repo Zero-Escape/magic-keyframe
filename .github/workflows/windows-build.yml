@@ -55,7 +55,8 @@ jobs:
             Open your existing .mkproj file using File → Open project. Projects reference your original media; keep that footage.
             Use File → Associate .mkproj files with this app to register this portable location; Windows may still require Open with → Always.
 
-            ## Optional proxies and overlap transitions (0.5.0)
+            ## Optional proxies and overlap transitions (0.5.1)
+            - One-second decoder look-ahead prepares the next clip without generating a full-file proxy.
             - Original-media preview by default; optional Use proxies toggle in the preview toolbar.
             - Proxy generation percentage/progress bar and per-file ETA; turning off cancels pending encodes.
             - Direct playback depends on browser codec support; 10-bit 4:2:2 may still need proxies.

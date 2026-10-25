@@ -1,6 +1,6 @@
 # Magic Keyframe
 
-A focused Windows wedding-video editor. **v0.5.0 is an unsigned development/test build,
+A focused Windows wedding-video editor. **v0.5.1 is an unsigned development/test build,
 not a verified client-delivery system.** New editing, DSP, sync, recovery and rendering
 paths need hands-on Windows checking; build/archive checks alone do not prove them.
 
@@ -240,3 +240,7 @@ with negative audio pre-roll, the whole timeline and saved playhead shift right 
 the same amount, preserving all source content and relative sync. The timeline extent
 now grows during moves to include the last clip; zoom remains under your control and
 Fit shows the full edit. Use Save As to keep the original older-project file.
+
+Preview decoder slots look ahead up to one second to prepare the next video/audio
+clip. Incoming overlap video stays transparent until a frame is decoded, leaving
+the outgoing picture visible while it prepares; this is not full-file transcoding.

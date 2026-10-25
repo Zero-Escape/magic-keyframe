@@ -80,11 +80,12 @@ function AudioLane({ clip, item, muted, playing, position, mixer, override, mixG
   }, [clip?.id, position, muted, playing, src, fx.gainDb, fx.audioFadeIn, fx.audioFadeOut, mixer, mixGain])
   return <><audio ref={ref} src={src} preload="auto" />{clip && item?.metadata.audio && (!ready || error) && <span className="audio-preparing">{error ? `Audio preview failed: ${error}` : 'Preparing audio preview…'}</span>}</>
 }
-function VideoSurface({ clip, src, playing, position, override, fps }: { clip: Segment; src: string; playing: boolean; position: number; override?: Partial<ClipEffects>; fps: number }) {
+function VideoSurface({ clip, src, playing, position, override, fps, onDecoded }: { clip: Segment; src: string; playing: boolean; position: number; override?: Partial<ClipEffects>; fps: number; onDecoded: () => void }) {
   const [fallback, setFallback] = useState(false), [decodeError, setDecodeError] = useState(false)
   useEffect(() => setDecodeError(false), [src])
   const videoRef = useRef<HTMLVideoElement>(null), canvasRef = useRef<HTMLCanvasElement>(null), pending = useRef(false), previous = useRef<{ src: string; wanted: number; offset: number } | undefined>(undefined)
-  const state = useRef({ clip, playing, position, override, src, fps }); state.current = { clip, playing, position, override, src, fps }
+  const decoded = useRef('')
+  const state = useRef({ clip, playing, position, override, src, fps, onDecoded }); state.current = { clip, playing, position, override, src, fps, onDecoded }
   useEffect(() => {
     const video = videoRef.current; if (!video) return
     const sync = () => {
@@ -122,7 +123,11 @@ function VideoSurface({ clip, src, playing, position, override, fps }: { clip: S
       // Keep drawing the last decoded texture through short seeks/buffering.
       // Only intentional timeline gaps (handled by Preview) should go black.
       if (video.readyState >= 2 && video.videoWidth && !video.seeking) {
-        try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video); hasTexture = true; aspect = video.videoWidth / video.videoHeight } catch { setFallback(true); return }
+        try {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video); hasTexture = true; aspect = video.videoWidth / video.videoHeight
+          const s = state.current, key = `${s.clip.id}:${s.src}:${s.clip.start - s.clip.at}`
+          if (decoded.current !== key && Math.abs(video.currentTime - (s.clip.start + s.position - s.clip.at)) < .4) { decoded.current = key; s.onDecoded() }
+        } catch { setFallback(true); return }
       }
       if (hasTexture) {
         const s = state.current, e = effects(s.override || s.clip.effects), gain = 2 ** e.exposure, d = s.clip.end - s.clip.start
@@ -139,7 +144,7 @@ function VideoSurface({ clip, src, playing, position, override, fps }: { clip: S
     return () => { cancelAnimationFrame(frame); video.pause(); gl.deleteTexture(texture); gl.deleteBuffer(buffer); gl.deleteProgram(program); gl.deleteShader(vert); gl.deleteShader(frag) }
   }, [])
   const displayed = effects(override || clip.effects), d = clip.end - clip.start
-  return <><video ref={videoRef} className={fallback ? 'fallback-decoder' : 'preview-decoder'} style={fallback ? { filter: `brightness(${2 ** displayed.exposure}) contrast(${displayed.contrast}) saturate(${displayed.saturation})`, opacity: fadeFactor(position - clip.at, d, Math.min(displayed.fadeIn, d / 2), Math.min(displayed.fadeOut, d / 2)) } : undefined} src={src} muted playsInline preload="auto" onError={() => setDecodeError(true)} />{decodeError && <div className="source-decode-error">This source format cannot play directly in the browser. Enable optional proxies in the toolbar to preview it; your original footage is unchanged.</div>}{fallback && <span className="audio-preparing">Compatibility preview: warmth is export-only without WebGL.</span>}<canvas className={`graded-preview ${fallback ? 'hidden' : ''}`} ref={canvasRef} width={1280} height={720} /></>
+  return <><video ref={videoRef} className={fallback ? 'fallback-decoder' : 'preview-decoder'} style={fallback ? { filter: `brightness(${2 ** displayed.exposure}) contrast(${displayed.contrast}) saturate(${displayed.saturation})`, opacity: fadeFactor(position - clip.at, d, Math.min(displayed.fadeIn, d / 2), Math.min(displayed.fadeOut, d / 2)) } : undefined} src={src} muted playsInline preload="auto" onError={() => { setDecodeError(true); state.current.onDecoded() }} />{decodeError && <div className="source-decode-error">This source format cannot play directly in the browser. Enable optional proxies in the toolbar to preview it; your original footage is unchanged.</div>}{fallback && <span className="audio-preparing">Compatibility preview: warmth is export-only without WebGL.</span>}<canvas className={`graded-preview ${fallback ? 'hidden' : ''}`} ref={canvasRef} width={1280} height={720} /></>
 }
 // Two stable decoder slots avoid remounting at ordinary cuts while allowing both
 // sides of an overlap to decode simultaneously (including one shared source file).
@@ -155,24 +160,28 @@ function useDecoderSlots(active: Segment[], position: number) {
   return slots.current.map((s) => ({ ...s, active: !!s.clip && active.some((c) => c.id === s.clip!.id) }))
 }
 function AudioTrack({ clips, media, lane, playing, position, mixer, draft }: { clips: Segment[]; media: MediaItem[]; lane: { muted: boolean }; playing: boolean; position: number; mixer: AudioMixer | null; draft?: { id: string; value: ClipEffects } }) {
-  const active = clips.filter((c) => position >= c.at && position < endAt(c)), slots = useDecoderSlots(active, position)
+  const active = clips.filter((c) => position >= c.at && position < endAt(c)), upcoming = active.length < 2 ? clips.filter((c) => c.at > position && c.at - position <= 1).sort((a, b) => a.at - b.at)[0] : undefined
+  const slots = useDecoderSlots(upcoming ? [...active, upcoming] : active, position)
   return <>{slots.map((slot, i) => {
     const clip = slot.active ? slot.clip : undefined, item = clip && media.find((m) => m.id === clip.mediaId)
     const stored = effects(clip?.effects), proposed = draft && clip?.id === draft.id ? { ...draft.value, vocal: stored.vocal, noise: stored.noise } : stored
     const blend = clip ? transitionEdges(clips, clip) : { incoming: 0, outgoing: 0 }
-    return <AudioLane key={i} clip={clip} item={item} muted={lane.muted} playing={playing && slot.active} position={position} mixer={mixer} override={{ ...proposed, audioFadeIn: blend.incoming ? 0 : proposed.audioFadeIn, audioFadeOut: blend.outgoing ? 0 : proposed.audioFadeOut }} mixGain={clip ? transitionGain(clips, clip, position) : 0} />
+    return <AudioLane key={i} clip={clip} item={item} muted={lane.muted} playing={playing && slot.active && !!clip && position >= clip.at} position={clip ? Math.max(position, clip.at) : position} mixer={mixer} override={{ ...proposed, audioFadeIn: blend.incoming ? 0 : proposed.audioFadeIn, audioFadeOut: blend.outgoing ? 0 : proposed.audioFadeOut }} mixGain={clip && position >= clip.at ? transitionGain(clips, clip, position) : 0} />
   })}</>
 }
 export function Preview({ edit, media, proxies, playing, position, mixer, draft }: { edit: TimelineEdit; media: MediaItem[]; proxies: Record<string, string>; playing: boolean; position: number; mixer: AudioMixer | null; draft?: { id: string; value: ClipEffects } }) {
   const visible = edit.video.filter((c) => !edit.lanes.video[c.lane].hidden && position >= c.at && position < endAt(c)).sort((a, b) => b.lane - a.lane || a.at - b.at)
-  const active = visible.filter((c) => c.lane === visible[0]?.lane), slots = useDecoderSlots(active, position)
+  const active = visible.filter((c) => c.lane === visible[0]?.lane)
+  const upcoming = active.length === 1 ? edit.video.filter((c) => c.lane === active[0].lane && c.at > position && c.at - position <= 1).sort((a, b) => a.at - b.at)[0] : undefined
+  const slots = useDecoderSlots(upcoming ? [...active, upcoming] : active, position), [decodedSlots, setDecodedSlots] = useState<Record<number, string>>({})
   return <div className="viewer studio-viewer">
     {slots.map((slot, i) => {
       const clip = slot.clip, item = clip && media.find((m) => m.id === clip.mediaId), src = item && proxies[item.id]
       if (!clip || !item || !src) return null
       const blend = transitionEdges(edit.video, clip), proposed = draft?.id === clip.id ? draft.value : effects(clip.effects)
-      const opacity = slot.active ? blend.incoming ? Math.max(0, Math.min(1, (position - clip.at) / blend.incoming)) : 1 : 0
-      return <div className="video-preview-layer" key={i} style={{ opacity, zIndex: active.findIndex((c) => c.id === clip.id), visibility: slot.active ? 'visible' : 'hidden' }}><VideoSurface fps={item.metadata.video?.fps || 29.97} clip={clip} src={src} playing={playing && slot.active} position={slot.position} override={{ ...proposed, fadeIn: blend.incoming ? 0 : proposed.fadeIn, fadeOut: blend.outgoing ? 0 : proposed.fadeOut }} /></div>
+      const showing = active.some((c) => c.id === clip.id), key = `${clip.id}:${src}:${clip.start - clip.at}`
+      const opacity = showing ? blend.incoming && active.length > 1 && decodedSlots[i] !== key ? 0 : blend.incoming ? Math.max(0, Math.min(1, (position - clip.at) / blend.incoming)) : 1 : 0
+      return <div className="video-preview-layer" key={i} style={{ opacity, zIndex: active.findIndex((c) => c.id === clip.id), visibility: showing ? 'visible' : 'hidden' }}><VideoSurface onDecoded={() => setDecodedSlots((s) => s[i] === key ? s : { ...s, [i]: key })} fps={item.metadata.video?.fps || 29.97} clip={clip} src={src} playing={playing && showing} position={Math.max(slot.position, clip.at)} override={{ ...proposed, fadeIn: blend.incoming ? 0 : proposed.fadeIn, fadeOut: blend.outgoing ? 0 : proposed.fadeOut }} /></div>
     })}
     {!active.length && <div className="viewer-empty">{media.length ? 'No visible video at this position' : 'Import your footage to begin'}</div>}
     {active.some((c) => !proxies[c.mediaId]) && <div className="viewer-empty">Preparing optional video proxy…</div>}
