@@ -1,6 +1,6 @@
 # Magic Keyframe
 
-A focused Windows wedding-video editor. **v0.4.1 is an unsigned development/test build,
+A focused Windows wedding-video editor. **v0.4.2 is an unsigned development/test build,
 not a verified client-delivery system.** New editing, DSP, sync, recovery and rendering
 paths need hands-on Windows checking; build/archive checks alone do not prove them.
 
@@ -21,7 +21,7 @@ currently download-and-extract, not automatic in-app updates. Keep your original
 Import/drop camera recordings, recorder files and music. Supported extensions include
 MP4, MOV, MXF, WAV, MP3, M4A, AAC, FLAC, OGG and AIFF. The current cap is **200 source
 files and 16 video + 16 audio tracks**. Ten-bit 4:2:2 H.264 sources use FFmpeg-generated
-1080p proxies for playback; originals, not proxies, are used for delivery rendering.
+720p short-GOP proxies for playback; originals, not proxies, are used for delivery rendering.
 
 - Imports append in sequence on track 1 of their type. Existing media is not replaced.
 - **+ on a media item** places another copy at the playhead, using the active compatible
@@ -188,3 +188,29 @@ The optional Setup installer is configured for `.mkproj` association. Portable Z
 not change registry settings. For a source checkout, `npm run associate:projects`
 registers that checkout per-user; keep its path in place or re-register after moving.
 Use File → Open in portable builds. Windows association still needs hands-on checking.
+
+### Playback and portable project associations (0.4.2)
+
+Contiguous splits reuse the decoder without a redundant seek. Pausing does not seek
+by itself; the graded preview retains the last decoded frame during short buffering
+or seeks (intentional empty timeline gaps remain empty). New proxies use 720p,
+15-frame GOPs and no B-frames for lighter decoding and faster seeking. A one-time
+proxy rebuild is required; originals and export quality are unchanged.
+
+The timeline −1/+1 frame buttons and left/right arrows step the **playhead**. To move
+selected/linked clips one frame instead, use Alt+left/right. Collision constraints
+can prevent clip moves at neighbours or the start of the timeline.
+
+In the Windows portable app, choose **File → Associate .mkproj files with this app**.
+If Windows retains another default, right-click a project → Open with → Choose
+another app → browse to this Magic Keyframe.exe → Always. Keep that extracted folder
+in place and repeat registration after moving to a new portable version.
+**Help → About Magic Keyframe** shows the running version and executable location;
+close older running copies before launching the new one. Registration is per-user
+and does not bypass Windows' protected default-app choice.
+
+Project reads accept UTF-8/UTF-16LE BOMs and report the failing filename. Loading
+shows which media is being inspected; large older projects may need audio/waveform
+cache generation. Versions 1–3 remain supported. A specific legacy opening failure
+needs the project file/error to diagnose; this update does not claim all such
+failures have been reproduced or resolved.

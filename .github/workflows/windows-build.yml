@@ -53,7 +53,16 @@ jobs:
 
             To update, close the old version and extract the new ZIP into a separate folder.
             Open your existing .mkproj file using File → Open project. Projects reference your original media; keep that footage.
-            The portable build does not register Windows file associations automatically.
+            Use File → Associate .mkproj files with this app to register this portable location; Windows may still require Open with → Always.
+
+            ## Playback and Windows workflow fixes (0.4.2)
+            - Contiguous same-source splits avoid needless seeks; pause/resume no longer seeks by itself.
+            - Graded preview holds the last decoded frame while seeking/buffering instead of clearing black.
+            - New lightweight 720p short-GOP proxies (one-time rebuild; originals/export unchanged).
+            - Frame buttons now step the playhead; Alt+left/right nudges selected/linked clips.
+            - File menu can register .mkproj files for this portable location; About shows running version/path.
+            - Project-load progress, filename-specific errors and Windows text BOM support.
+            - Specific legacy-project failures still need the failing .mkproj/error for diagnosis.
 
             ## Direct timeline video fades
             - Gold triangles at the top of video clips: drag inward for fade-from/to-black, outward to remove.

@@ -57,7 +57,11 @@ export function validateProject(value: unknown): Project {
 }
 export async function readProject(filePath: string) {
   if ((await stat(filePath)).size > 16 * 1024 * 1024) throw new Error('Project is too large.')
-  return validateProject(JSON.parse(await readFile(filePath, 'utf8')))
+  const bytes = await readFile(filePath)
+  // Accept BOMs from Windows text tools without weakening project validation.
+  const raw = bytes[0] === 0xff && bytes[1] === 0xfe ? bytes.subarray(2).toString('utf16le') : bytes.toString('utf8').replace(/^\uFEFF/, '')
+  try { return validateProject(JSON.parse(raw)) }
+  catch (error) { throw new Error(`Could not read ${path.basename(filePath)}: ${error instanceof Error ? error.message : String(error)}`) }
 }
 export async function writeProject(filePath: string, value: unknown) {
   const project = validateProject(value)

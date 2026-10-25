@@ -11,6 +11,7 @@ import { buildStudioExport, type RenderMedia } from './studio-export.js'
 import { effects, audioProcessing, type ClipEffects } from './effects.js'
 import { autosave, recoveryList, discardRecovery, recoveryInfo } from './recovery.js'
 import { decodeEnvelope, findSync } from './sync-engine.js'
+import { associateProjects } from './association.js'
 
 const packagedFfmpegPath = process.platform === 'win32'
   ? path.join(app.getAppPath(), 'assets', 'ffmpeg-win64.exe')
@@ -75,12 +76,12 @@ async function buildProxy(filePath: string) {
   await mkdir(proxyFolder, { recursive: true })
   const source = await stat(filePath)
   const key = createHash('sha1').update(filePath).update(String(source.size)).update(String(source.mtimeMs)).digest('hex').slice(0, 16)
-  const outputPath = path.join(proxyFolder, `${key}-1080p.mp4`)
+  const outputPath = path.join(proxyFolder, `${key}-preview720p-v2.mp4`)
   if (!await fileExists(outputPath)) {
     const release = await acquireSlot('video')
     const pendingPath = path.join(proxyFolder, `${key}-${process.pid}-${Date.now()}.mp4`)
-    const input = ['-y', '-v', 'error', '-i', filePath, '-map', '0:v:0', '-map', '0:a:0?', '-vf', 'scale=-2:1080,format=yuv420p']
-    const output = ['-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', pendingPath]
+    const input = ['-y', '-v', 'error', '-i', filePath, '-map', '0:v:0', '-an', '-vf', 'scale=-2:720,format=yuv420p']
+    const output = ['-pix_fmt', 'yuv420p', '-g', '15', '-bf', '0', '-movflags', '+faststart', pendingPath]
     try {
       try { await runProcess(unpackedPath(packagedFfmpegPath), [...input, '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '25', ...output]) }
       catch { await runProcess(unpackedPath(packagedFfmpegPath), [...input, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', ...output]) }
@@ -252,7 +253,14 @@ function createWindow() {
       { label: 'Open project…', accelerator: 'CmdOrCtrl+O', click: () => sendCommand('open') },
       { label: 'Save project', accelerator: 'CmdOrCtrl+S', click: () => sendCommand('save') },
       { label: 'Save project as…', accelerator: 'CmdOrCtrl+Shift+S', click: () => sendCommand('saveAs') },
-      { type: 'separator' }, { role: 'close' },
+      { type: 'separator' },
+      { label: 'Associate .mkproj files with this app…', enabled: process.platform === 'win32' && app.isPackaged, click: async () => {
+        try {
+          await associateProjects(process.execPath)
+          await dialog.showMessageBox(mainWindow!, { type: 'info', title: 'Project file association', message: 'Registered this Magic Keyframe location for .mkproj files.', detail: 'If Windows still asks, right-click a .mkproj → Open with → Choose another app → Choose an app on your PC, select this Magic Keyframe.exe, then choose Always. Keep this folder in place. Run this action again after moving/updating the portable app.' })
+        } catch (error) { dialog.showErrorBox('Could not associate project files', String(error)) }
+      } },
+      { role: 'close' },
     ] },
     { label: 'Edit', submenu: [
       { label: 'Undo edit', accelerator: 'CmdOrCtrl+Z', click: () => sendCommand('undo') },
@@ -266,6 +274,7 @@ function createWindow() {
       { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' },
     ] },
     { role: 'viewMenu' }, { role: 'windowMenu' },
+    { label: 'Help', submenu: [{ label: 'About Magic Keyframe', click: () => { void dialog.showMessageBox(mainWindow!, { type: 'info', title: 'About Magic Keyframe', message: `Magic Keyframe ${app.getVersion()}`, detail: `Running from:\n${process.execPath}` }) } }] },
   ]))
   if (isDev) window.loadURL('http://localhost:5173')
   else window.loadFile(path.join(__dirname, '../dist/index.html'))
@@ -329,10 +338,12 @@ async function loadProject(requestedPath?: string) {
     if (result.canceled) return null
     filePath = result.filePaths[0]
   }
+  sendCommand('loadStatus', `Reading ${path.basename(filePath)}…`)
   const project = await readProject(filePath)
   const loaded = []
   let relinked = false
-  for (const entry of project.media) {
+  for (const [index, entry] of project.media.entries()) {
+    sendCommand('loadStatus', `Opening media ${index + 1}/${project.media.length}: ${path.basename(entry.path)} — checking audio and waveforms…`)
     let source = path.resolve(path.dirname(filePath), entry.path)
     if (!await fileExists(source)) {
       if (entry.absolutePath && await fileExists(entry.absolutePath)) source = entry.absolutePath
