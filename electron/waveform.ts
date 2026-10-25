@@ -5,7 +5,7 @@ export type WaveformData = { bucketSeconds: number; channels: { min: number[]; m
 export function analyzeWaveform(executable: string, file: string, channels: number): Promise<WaveformData> {
   const count = Math.max(1, Math.min(2, channels || 1)), rate = 24000, bucket = 120
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, ['-v', 'error', '-i', file, '-vn', '-ac', String(count), '-ar', String(rate), '-f', 'f32le', '-acodec', 'pcm_f32le', 'pipe:1'], { windowsHide: true })
+    const child = spawn(executable, ['-v', 'error', '-i', file, '-vn', '-map', '0:a:0', '-ac', String(count), '-ar', String(rate), '-f', 'f32le', '-acodec', 'pcm_f32le', 'pipe:1'], { windowsHide: true })
     const data: WaveformData = { bucketSeconds: bucket / rate, channels: Array.from({ length: count }, () => ({ min: [], max: [] })) }
     let pending = Buffer.alloc(0), frames = 0, errors = ''
     let lows = Array(count).fill(Infinity), highs = Array(count).fill(-Infinity)

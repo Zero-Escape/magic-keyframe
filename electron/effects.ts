@@ -1,0 +1,32 @@
+export type ClipEffects = {
+  gainDb: number; audioFadeIn: number; audioFadeOut: number
+  vocal: number; noise: number
+  exposure: number; contrast: number; saturation: number; temperature: number
+  fadeIn: number; fadeOut: number
+}
+export const defaultEffects: ClipEffects = { gainDb: 0, audioFadeIn: 0, audioFadeOut: 0, vocal: 0, noise: 0, exposure: 0, contrast: 1, saturation: 1, temperature: 0, fadeIn: 0, fadeOut: 0 }
+export const effectLimits: Record<keyof ClipEffects, [number, number]> = {
+  gainDb: [-60, 18], audioFadeIn: [0, 30], audioFadeOut: [0, 30], vocal: [0, 1], noise: [0, 30], exposure: [-3, 3], contrast: [.5, 2], saturation: [0, 2], temperature: [-1, 1], fadeIn: [0, 10], fadeOut: [0, 10],
+}
+export function effects(value?: Partial<ClipEffects>): ClipEffects { return { ...defaultEffects, ...value } }
+export function fadeFactor(time: number, duration: number, fadeIn: number, fadeOut: number) {
+  return Math.max(0, Math.min(1, fadeIn > 0 ? time / fadeIn : 1, fadeOut > 0 ? (duration - time) / fadeOut : 1))
+}
+// Spectral denoising and conventional speech EQ/compression, not voice isolation.
+export function audioProcessing(e: ClipEffects) {
+  const filters: string[] = []
+  if (e.noise > 0) filters.push(`afftdn=nr=${e.noise.toFixed(2)}:nf=-40:tn=1`)
+  if (e.vocal > 0) filters.push(`highpass=f=80,equalizer=f=250:t=q:w=1:g=${(-2 * e.vocal).toFixed(3)},equalizer=f=3000:t=q:w=1:g=${(4 * e.vocal).toFixed(3)},acompressor=threshold=0.125:ratio=${(1 + 1.5 * e.vocal).toFixed(3)}:attack=10:release=150:makeup=${(1 + .5 * e.vocal).toFixed(3)}`)
+  return filters
+}
+export function videoProcessing(e: ClipEffects, duration: number) {
+  const gain = 2 ** e.exposure, white = [1 + e.temperature * .12, 1, 1 - e.temperature * .12]
+  const rgb = ['r', 'g', 'b'].map((channel, i) => `${channel}='clip((val*${(gain * white[i]).toFixed(7)}-maxval/2)*${e.contrast.toFixed(7)}+maxval/2,0,maxval)'`).join(':')
+  const sat = e.saturation, luma = [.2126, .7152, .0722]
+  const matrix = ['r', 'g', 'b'].flatMap((row, r) => ['r', 'g', 'b'].map((col, c) => `${row}${col}=${((1 - sat) * luma[c] + (r === c ? sat : 0)).toFixed(7)}`)).join(':')
+  const graded = e.exposure !== 0 || e.contrast !== 1 || e.saturation !== 1 || e.temperature !== 0
+  const filters = graded ? [`format=gbrp16le,lutrgb=${rgb},colorchannelmixer=${matrix}`] : []
+  if (e.fadeIn > 0) filters.push(`fade=t=in:st=0:d=${Math.min(e.fadeIn, duration / 2).toFixed(6)}`)
+  if (e.fadeOut > 0) { const d = Math.min(e.fadeOut, duration / 2); filters.push(`fade=t=out:st=${Math.max(0, duration - d).toFixed(6)}:d=${d.toFixed(6)}`) }
+  return filters
+}

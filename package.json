@@ -1,6 +1,6 @@
 {
   "name": "magic-keyframe",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "A focused wedding video editor for Byrne Photography.",
   "author": "Byrne Photography",
@@ -44,7 +44,8 @@
     "asarUnpack": [
       "node_modules/ffmpeg-static/**",
       "node_modules/ffprobe-static/**",
-      "assets/ffmpeg-win64.exe"
+      "assets/ffmpeg-win64.exe",
+      "dist-electron/sync-engine.js"
     ],
     "files": [
       "dist/**",

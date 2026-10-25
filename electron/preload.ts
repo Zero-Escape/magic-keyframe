@@ -1,6 +1,12 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 contextBridge.exposeInMainWorld('magicKey', {
+  autosave: (project: unknown, filePath: string | undefined, session: string) => ipcRenderer.invoke('project:autosave', project, filePath, session),
+  recoveries: () => ipcRenderer.invoke('project:recoveries'),
+  recoverProject: (filePath: string) => ipcRenderer.invoke('project:recover', filePath),
+  discardRecovery: (filePath: string | undefined, session: string) => ipcRenderer.invoke('project:discard-recovery', filePath, session),
+  audioPreview: (filePath: string, value: unknown) => ipcRenderer.invoke('media:audio-preview', filePath, value),
+  syncAudio: (request: unknown) => ipcRenderer.invoke('media:sync', request),
   saveProject: (project: unknown, filePath?: string) => ipcRenderer.invoke('project:save', project, filePath),
   openProject: (filePath?: string) => ipcRenderer.invoke('project:open', filePath),
   confirmProject: () => ipcRenderer.invoke('project:confirm'),

@@ -1,7 +1,10 @@
+import { type ClipEffects } from './effects.js'
 // Shared, immutable timeline operations. Source time is start/end; placement is at.
 export type Track = 'video' | 'audio'
-export type Segment = { id: string; start: number; end: number; at: number; linkId?: string }
-export type TimelineEdit = { video: Segment[]; audio: Segment[] }
+export type Segment = { id: string; start: number; end: number; at: number; linkId?: string; mediaId: string; lane: number; effects?: Partial<ClipEffects> }
+export type Lane = { name: string; muted: boolean; hidden: boolean }
+export type TimelineEdit = { video: Segment[]; audio: Segment[]; lanes: { video: Lane[]; audio: Lane[] } }
+export const emptyEdit = (): TimelineEdit => ({ video: [], audio: [], lanes: { video: [{ name: 'Video 1', muted: false, hidden: false }], audio: [{ name: 'Audio 1', muted: false, hidden: false }] } })
 export const tracks: Track[] = ['video', 'audio']
 export const length = (clip: Segment) => clip.end - clip.start
 export const endAt = (clip: Segment) => clip.at + length(clip)
@@ -9,7 +12,7 @@ export const activeClip = (clips: Segment[], time: number) => clips.find((clip) 
 export const timelineEnd = (edit: TimelineEdit) => Math.max(0, ...tracks.flatMap((track) => edit[track].map(endAt)))
 export const ordered = (clips: Segment[]) => [...clips].sort((a, b) => a.at - b.at)
 const all = (edit: TimelineEdit) => [...edit.video, ...edit.audio]
-const map = (edit: TimelineEdit, fn: (clip: Segment, track: Track) => Segment): TimelineEdit => ({ video: edit.video.map((c) => fn(c, 'video')), audio: edit.audio.map((c) => fn(c, 'audio')) })
+const map = (edit: TimelineEdit, fn: (clip: Segment, track: Track) => Segment): TimelineEdit => ({ ...edit, video: edit.video.map((c) => fn(c, 'video')), audio: edit.audio.map((c) => fn(c, 'audio')) })
 export function linkedSelection(edit: TimelineEdit, ids: string[]) {
   const chosen = new Set(ids), links = new Set(all(edit).filter((c) => chosen.has(c.id) && c.linkId).map((c) => c.linkId))
   return all(edit).filter((c) => chosen.has(c.id) || (c.linkId && links.has(c.linkId))).map((c) => c.id)
@@ -31,7 +34,7 @@ export function unlinkClips(edit: TimelineEdit, ids: string[]) {
 }
 export function removeClips(edit: TimelineEdit, ids: string[]) {
   const selected = new Set(linkedSelection(edit, ids))
-  return pruneLinks({ video: edit.video.filter((c) => !selected.has(c.id)), audio: edit.audio.filter((c) => !selected.has(c.id)) })
+  return pruneLinks({ ...edit, video: edit.video.filter((c) => !selected.has(c.id)), audio: edit.audio.filter((c) => !selected.has(c.id)) })
 }
 // Clamp one shared delta for the whole selection: no overlaps, lost relative sync,
 // negative video placement, or destructive overwrites. Audio can have pre-roll.
@@ -41,7 +44,7 @@ export function moveClips(edit: TimelineEdit, ids: string[], requested: number, 
   let min = -Infinity, max = Infinity
   for (const track of tracks) for (const c of edit[track].filter((c) => selected.has(c.id))) {
     if (track === 'video') min = Math.max(min, -c.at)
-    for (const other of edit[track].filter((c) => !selected.has(c.id))) {
+    for (const other of edit[track].filter((other) => !selected.has(other.id) && other.lane === c.lane)) {
       if (endAt(other) <= c.at + 1e-7) min = Math.max(min, endAt(other) - c.at)
       else if (other.at >= endAt(c) - 1e-7) max = Math.min(max, other.at - endAt(c))
     }
@@ -68,9 +71,9 @@ export function splitClips(edit: TimelineEdit, ids: string[], time: number, mini
     const group = c.linkId ? links.get(c.linkId) : undefined
     if (splitIds.has(c.id)) {
       const cut = c.start + time - c.at
-      const right = { ...c, id: createId(), start: cut, at: time, linkId: group?.right }
+      const right = { ...c, id: createId(), start: cut, at: time, linkId: group?.right, effects: { ...c.effects, fadeIn: 0, audioFadeIn: 0 } }
       selection.push(right.id)
-      return [{ ...c, end: cut, linkId: group?.left }, right]
+      return [{ ...c, end: cut, linkId: group?.left, effects: { ...c.effects, fadeOut: 0, audioFadeOut: 0 } }, right]
     }
     if (group) {
       const right = c.at >= time - 1e-7
@@ -79,13 +82,13 @@ export function splitClips(edit: TimelineEdit, ids: string[], time: number, mini
     }
     return [c]
   })
-  const result = pruneLinks({ video: splitTrack(edit.video), audio: splitTrack(edit.audio) })
+  const result = pruneLinks({ ...edit, video: splitTrack(edit.video), audio: splitTrack(edit.audio) })
   return { edit: result, selection: linkedSelection(result, selection) }
 }
 export function trimClip(edit: TimelineEdit, id: string, edge: 'start' | 'end', value: number, sourceDuration: number, minimum: number) {
   return map(edit, (clip, track) => {
     if (clip.id !== id || !Number.isFinite(value)) return clip
-    const clips = ordered(edit[track]), index = clips.findIndex((c) => c.id === id)
+    const clips = ordered(edit[track].filter((c) => c.lane === clip.lane)), index = clips.findIndex((c) => c.id === id)
     if (edge === 'start') {
       const earliest = Math.max(0, index ? clip.start + endAt(clips[index - 1]) - clip.at : track === 'video' ? clip.start - clip.at : 0)
       const start = Math.max(earliest, Math.min(clip.end - minimum, value))

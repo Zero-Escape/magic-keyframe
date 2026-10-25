@@ -4,10 +4,13 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { access, mkdir, rename, stat, unlink, readFile, writeFile } from 'node:fs/promises'
-import { readProject, writeProject, type Project } from './project-file.js'
+import { readProject, writeProject, validateProject, type Project } from './project-file.js'
 import { analyzeWaveform, audioThumbnail, type WaveformData } from './waveform.js'
 import packagedFfmpegStaticPath from 'ffmpeg-static'
-import { buildTimelineExportFilter, type PlacedSegment } from './export-filter.js'
+import { buildStudioExport, type RenderMedia } from './studio-export.js'
+import { effects, audioProcessing, type ClipEffects } from './effects.js'
+import { autosave, recoveryList, discardRecovery, recoveryInfo } from './recovery.js'
+import { decodeEnvelope, findSync } from './sync-engine.js'
 
 const packagedFfmpegPath = process.platform === 'win32'
   ? path.join(app.getAppPath(), 'assets', 'ffmpeg-win64.exe')
@@ -25,7 +28,7 @@ const unpackedPath = (binaryPath: string) => app.isPackaged ? binaryPath.replace
 type ProbeStream = {
   codec_type?: 'video' | 'audio'; codec_name?: string; profile?: string
   width?: number; height?: number; avg_frame_rate?: string; sample_rate?: string
-  channels?: number; pix_fmt?: string
+  channels?: number; pix_fmt?: string; disposition?: { attached_pic?: number }
 }
 type ProbeResult = {
   format?: { duration?: string; bit_rate?: string; format_long_name?: string }
@@ -50,6 +53,13 @@ async function fileExists(filePath: string) {
   try { await access(filePath); return true } catch { return false }
 }
 
+const jobPools = { video: { active: 0, waiting: [] as (() => void)[] }, audio: { active: 0, waiting: [] as (() => void)[] } }
+async function acquireSlot(kind: 'video' | 'audio') {
+  const pool = jobPools[kind]
+  if (pool.active < 2) pool.active++
+  else await new Promise<void>((resolve) => pool.waiting.push(resolve))
+  return () => { const next = pool.waiting.shift(); if (next) next(); else pool.active-- }
+}
 const proxyJobs = new Map<string, Promise<{ path: string; url: string }>>()
 function generateProxy(filePath: string) {
   let pending = proxyJobs.get(filePath)
@@ -67,6 +77,7 @@ async function buildProxy(filePath: string) {
   const key = createHash('sha1').update(filePath).update(String(source.size)).update(String(source.mtimeMs)).digest('hex').slice(0, 16)
   const outputPath = path.join(proxyFolder, `${key}-1080p.mp4`)
   if (!await fileExists(outputPath)) {
+    const release = await acquireSlot('video')
     const pendingPath = path.join(proxyFolder, `${key}-${process.pid}-${Date.now()}.mp4`)
     const input = ['-y', '-v', 'error', '-i', filePath, '-map', '0:v:0', '-map', '0:a:0?', '-vf', 'scale=-2:1080,format=yuv420p']
     const output = ['-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', pendingPath]
@@ -77,54 +88,68 @@ async function buildProxy(filePath: string) {
     } catch (error) {
       await unlink(pendingPath).catch(() => {})
       throw error
-    }
+    } finally { release() }
   }
   return { path: outputPath, url: pathToFileURL(outputPath).toString() }
 }
 
-type ExportRequest = { videoPath: string; audioPath?: string; segments: PlacedSegment[]; audioSegments: PlacedSegment[]; videoMuted?: boolean; audioMuted?: boolean; videoHidden?: boolean }
-
+type ExportRequest = { project: Project; quality: '2160p' | '1080p' }
 async function exportVideo(request: ExportRequest) {
   if (!packagedFfmpegPath) throw new Error('FFmpeg is unavailable')
-  const metadata = await inspectMedia(request.videoPath)
-  if (!metadata.video || !Array.isArray(request.segments) || !request.segments.length || !Array.isArray(request.audioSegments)) throw new Error('Invalid timeline edit')
-  const valid = (clips: PlacedSegment[], duration: number, video: boolean) => {
-    const sorted = [...clips].sort((a, b) => a.at - b.at)
-    return sorted.length <= 10000 && sorted.every((c, i) => Number.isFinite(c.start) && Number.isFinite(c.end) && Number.isFinite(c.at)
-      && c.start >= 0 && c.end > c.start && c.end <= duration + .05 && (!video || c.at >= -1e-7)
-      && (i === 0 || c.at >= sorted[i - 1].at + sorted[i - 1].end - sorted[i - 1].start - 1e-7))
+  const project = validateProject(request.project), usedIds = new Set([...project.edit.video, ...project.edit.audio].map((c) => c.mediaId))
+  if (!project.edit.video.length) throw new Error('Add at least one video clip before exporting.')
+  const media: RenderMedia[] = []
+  let fps = 29.97
+  for (const item of project.media.filter((m) => usedIds.has(m.id))) {
+    const meta = await inspectMedia(item.path)
+    if (item.kind === 'video' && !meta.video) throw new Error(`No video in ${path.basename(item.path)}`)
+    if (project.edit[item.kind].some((c) => c.mediaId === item.id && c.end > meta.duration + .05)) throw new Error(`Invalid source range for ${path.basename(item.path)}`)
+    if (media.every((m) => !m.video) && meta.video?.fps) fps = meta.video.fps
+    media.push({ id: item.id, path: item.path, audio: !!meta.audio, video: !!meta.video })
   }
-  if (!valid(request.segments, metadata.duration, true)) throw new Error('Invalid video cut points or overlapping clips')
-  if (request.audioPath) {
-    const audioMetadata = await inspectMedia(request.audioPath)
-    if (!valid(request.audioSegments, audioMetadata.duration, false)) throw new Error('Invalid audio cut points or overlapping clips')
-  } else if (request.audioSegments.length) throw new Error('Audio clips have no source media')
-  const result = await dialog.showSaveDialog({
-    title: 'Export 4K MP4',
-    defaultPath: path.join(app.getPath('videos'), 'Magic-Keyframe-Export.mp4'),
-    filters: [{ name: 'MP4 video', extensions: ['mp4'] }],
-  })
+  const result = await dialog.showSaveDialog({ title: 'Export delivery MP4', defaultPath: path.join(app.getPath('videos'), 'Magic-Keyframe-Export.mp4'), filters: [{ name: 'MP4 video', extensions: ['mp4'] }] })
   if (result.canceled || !result.filePath) return { canceled: true }
-  if ([request.videoPath, request.audioPath].some((input) => input && path.resolve(input) === path.resolve(result.filePath!)))
-    throw new Error('Choose an export path different from the source media')
-  const filter = buildTimelineExportFilter(request.segments, request.audioSegments, Boolean(request.audioPath), Boolean(metadata.audio), {
-    width: metadata.video.width || 3840, height: metadata.video.height || 2160, fps: metadata.video.fps || 29.97,
-    videoMuted: request.videoMuted ?? Boolean(request.audioPath), audioMuted: request.audioMuted ?? false, videoHidden: request.videoHidden ?? false,
-  })
-  const args = ['-y', '-v', 'error', '-i', request.videoPath]
-  if (request.audioPath) args.push('-i', request.audioPath)
-  args.push('-filter_complex', filter, '-map', '[vout]', '-map', '[aout]')
-  const pendingPath = path.join(path.dirname(result.filePath), `.${path.basename(result.filePath, '.mp4')}-${process.pid}-${Date.now()}.mp4`)
-  const tail = ['-pix_fmt', 'yuv420p', '-profile:v', 'high', '-c:a', 'aac', '-b:a', '256k', '-ar', '48000', '-movflags', '+faststart', pendingPath]
+  if (project.media.some((m) => path.resolve(m.path).toLowerCase() === path.resolve(result.filePath!).toLowerCase())) throw new Error('Export cannot overwrite source media.')
+  const width = request.quality === '1080p' ? 1920 : 3840, height = request.quality === '1080p' ? 1080 : 2160
+  const filter = buildStudioExport(project.edit, media, width, height, fps)
+  const filterPath = path.join(app.getPath('userData'), `export-${process.pid}-${Date.now()}.txt`)
+  const pending = path.join(path.dirname(result.filePath), `.magic-keyframe-${process.pid}-${Date.now()}.mp4`)
+  const args = ['-y', '-v', 'error', ...media.flatMap((m) => ['-i', m.path]), '-filter_complex_threads', '2', '-filter_complex_script', filterPath, '-map', '[vout]', '-map', '[aout]']
+  const tail = ['-pix_fmt', 'yuv420p', '-profile:v', 'high', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709', '-color_range', 'tv', '-c:a', 'aac', '-b:a', '256k', '-ar', '48000', '-movflags', '+faststart', pending]
   try {
-    try { await runProcess(unpackedPath(packagedFfmpegPath), [...args, '-c:v', 'h264_nvenc', '-preset', 'p5', '-cq', '19', '-b:v', '0', ...tail]) }
+    await writeFile(filterPath, filter)
+    try { await runProcess(unpackedPath(packagedFfmpegPath), [...args, '-c:v', 'h264_nvenc', '-preset', 'p5', '-cq', '19', ...tail]) }
     catch { await runProcess(unpackedPath(packagedFfmpegPath), [...args, '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', ...tail]) }
-    await rename(pendingPath, result.filePath)
-  } catch (error) {
-    await unlink(pendingPath).catch(() => {})
-    throw error
-  }
+    await rename(pending, result.filePath)
+  } catch (error) { await unlink(pending).catch(() => {}); throw error }
+  finally { await unlink(filterPath).catch(() => {}) }
   return { canceled: false, path: result.filePath }
+}
+const audioJobs = new Map<string, Promise<{ url: string }>>()
+async function audioPreview(filePath: string, value?: Partial<ClipEffects>) {
+  if (!packagedFfmpegPath) throw new Error('FFmpeg is unavailable')
+  const e = effects(value)
+  if (!Number.isFinite(e.vocal) || e.vocal < 0 || e.vocal > 1 || !Number.isFinite(e.noise) || e.noise < 0 || e.noise > 30) throw new Error('Invalid audio processing settings.')
+  const source = await stat(filePath), folder = path.join(app.getPath('userData'), 'audio-preview-v1')
+  const key = createHash('sha1').update(filePath).update(`${source.size}-${source.mtimeMs}-${e.vocal}-${e.noise}-${audioProcessing(e).join(',')}`).digest('hex')
+  let job = audioJobs.get(key)
+  if (!job) {
+    job = (async () => {
+      await mkdir(folder, { recursive: true })
+      const output = path.join(folder, `${key}.m4a`)
+      if (!await fileExists(output)) {
+        const release = await acquireSlot('audio')
+        const pending = `${output}.${process.pid}.m4a`, fx = audioProcessing(e)
+        try {
+          await runProcess(unpackedPath(packagedFfmpegPath!), ['-y', '-v', 'error', '-i', filePath, '-map', '0:a:0', '-vn', ...(fx.length ? ['-af', fx.join(',')] : []), '-ar', '48000', '-ac', '2', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', pending])
+          await rename(pending, output)
+        } catch (error) { await unlink(pending).catch(() => {}); throw error } finally { release() }
+      }
+      return { url: pathToFileURL(output).toString() }
+    })().finally(() => audioJobs.delete(key))
+    audioJobs.set(key, job)
+  }
+  return job
 }
 
 function frameRate(value?: string) {
@@ -138,7 +163,7 @@ async function inspectMedia(filePath: string) {
     '-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', filePath,
   ])
   const probe = JSON.parse(output.toString()) as ProbeResult
-  const video = probe.streams?.find((stream) => stream.codec_type === 'video')
+  const video = probe.streams?.find((stream) => stream.codec_type === 'video' && !stream.disposition?.attached_pic)
   const audio = probe.streams?.find((stream) => stream.codec_type === 'audio')
   return {
     duration: Number(probe.format?.duration || 0),
@@ -248,17 +273,19 @@ function createWindow() {
 
 async function importMediaPaths(paths: string[]) {
   if (!Array.isArray(paths) || paths.length > 100 || paths.some((filePath) => typeof filePath !== 'string')) throw new Error('Invalid media drop')
-  const supported = new Set(['.mp4', '.mov', '.mxf', '.wav', '.mp3', '.m4a', '.aac'])
+  const supported = new Set(['.mp4', '.mov', '.mxf', '.wav', '.mp3', '.m4a', '.aac', '.flac', '.ogg', '.aif', '.aiff'])
   const files = [...new Set(paths)].filter((filePath) => supported.has(path.extname(filePath).toLowerCase()))
-  if (!files.length) throw new Error('Choose MP4, MOV, MXF, WAV, MP3, M4A, or AAC files. Folders cannot be imported.')
-  return Promise.all(files.map(async (filePath) => {
+  if (!files.length) throw new Error('Choose supported video or audio files (MP4, MOV, MXF, WAV, MP3, M4A, AAC, FLAC, OGG or AIFF). Folders cannot be imported.')
+  const imported = []
+  for (const filePath of files) {
     if (!(await stat(filePath)).isFile()) throw new Error('Drop media files, not folders')
     const metadata = await inspectMedia(filePath)
     if (!Number.isFinite(metadata.duration) || metadata.duration <= 0) throw new Error(`Could not determine media duration: ${path.basename(filePath)}`)
     if (!metadata.video && !metadata.audio) throw new Error(`No supported media streams in ${path.basename(filePath)}`)
-    return { path: filePath, url: pathToFileURL(filePath).toString(), name: path.basename(filePath), metadata,
-      ...await mediaVisuals(filePath, metadata) }
-  }))
+    const [visuals, audio] = await Promise.all([mediaVisuals(filePath, metadata), metadata.audio ? audioPreview(filePath) : Promise.resolve(undefined)])
+    imported.push({ path: filePath, url: pathToFileURL(filePath).toString(), name: path.basename(filePath), metadata, audioUrl: audio?.url, ...visuals })
+  }
+  return imported
 }
 
 ipcMain.handle('media:import', (_event, paths: string[]) => importMediaPaths(paths))
@@ -267,7 +294,7 @@ ipcMain.handle('media:choose', async () => {
     title: 'Add media to Magic Keyframe',
     properties: ['openFile', 'multiSelections'],
     filters: [
-      { name: 'Video and audio', extensions: ['mp4', 'mov', 'mxf', 'wav', 'mp3', 'm4a', 'aac'] },
+      { name: 'Video and audio', extensions: ['mp4', 'mov', 'mxf', 'wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg', 'aif', 'aiff'] },
     ],
   })
   if (result.canceled) return []
@@ -295,7 +322,7 @@ ipcMain.handle('project:save', async (_event, project: Project, currentPath?: st
   await writeProject(filePath, project)
   return filePath
 })
-ipcMain.handle('project:open', async (_event, requestedPath?: string) => {
+async function loadProject(requestedPath?: string) {
   let filePath = requestedPath
   if (!filePath) {
     const result = await dialog.showOpenDialog(mainWindow!, { title: 'Open Magic Keyframe project', properties: ['openFile'], filters: [{ name: 'Magic Keyframe project', extensions: ['mkproj'] }] })
@@ -317,10 +344,29 @@ ipcMain.handle('project:open', async (_event, requestedPath?: string) => {
     }
     const item = (await importMediaPaths([source]))[0]
     if ((entry.kind === 'video' && !item.metadata.video) || (entry.kind === 'audio' && (!item.metadata.audio || item.metadata.video))) throw new Error(`Wrong media type for ${entry.path}`)
-    if (project.edit[entry.kind].some((s) => s.end > item.metadata.duration + .05)) throw new Error(`Media is shorter than the saved edits: ${item.name}`)
+    if (project.edit[entry.kind].some((s) => s.mediaId === entry.id && s.end > item.metadata.duration + .05)) throw new Error(`Media is shorter than the saved edits: ${item.name}`)
     loaded.push({ ...item, id: entry.id, kind: entry.kind })
   }
   return { path: filePath, project, media: loaded, relinked }
+}
+ipcMain.handle('project:open', (_event, filePath?: string) => loadProject(filePath))
+
+const recoveryFolder = () => path.join(app.getPath('userData'), 'recovery')
+ipcMain.handle('project:autosave', (_event, project: Project, source: string | undefined, session: string) => autosave(recoveryFolder(), project, source, session))
+ipcMain.handle('project:recoveries', () => recoveryList(recoveryFolder()))
+ipcMain.handle('project:discard-recovery', (_event, source: string | undefined, session: string) => discardRecovery(recoveryFolder(), source, session))
+ipcMain.handle('project:recover', async (_event, file: string) => {
+  const info = await recoveryInfo(recoveryFolder(), file), result = await loadProject(file)
+  return result ? { ...result, path: info.projectPath, recovered: true, session: info.session } : null
+})
+ipcMain.handle('media:audio-preview', (_event, file: string, value?: Partial<ClipEffects>) => audioPreview(file, value))
+ipcMain.handle('media:sync', async (_event, request: { referencePath: string; referenceStart: number; referenceEnd: number; targetPath: string; targetStart: number; targetEnd: number }) => {
+  if (!packagedFfmpegPath) throw new Error('FFmpeg is unavailable')
+  const [reference, target] = await Promise.all([
+    decodeEnvelope(unpackedPath(packagedFfmpegPath), request.referencePath, request.referenceStart, request.referenceEnd),
+    decodeEnvelope(unpackedPath(packagedFfmpegPath), request.targetPath, request.targetStart, request.targetEnd),
+  ])
+  return findSync(reference, target, request.referenceStart, request.targetStart)
 })
 
 app.whenReady().then(() => {

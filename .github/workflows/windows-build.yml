@@ -55,11 +55,20 @@ jobs:
             Open your existing .mkproj file using File → Open project. Projects reference your original media; keep that footage.
             The portable build does not register Windows file associations automatically.
 
-            Multi-select clips with Ctrl/Shift+click and drag them together. Link aligned video/audio with Ctrl+L;
-            splitting creates separate linked left/right pairs. Unlink with Ctrl+Shift+L.
-            Clips snap at their edges; Alt disables snapping. Preview/export honor placements and gaps.
-            Undo/redo and .mkproj files retain moves and links. Existing v1 projects open; saving upgrades to v2.
-            Still includes detailed waveforms, thumbnails, and 8-bit H.264/AAC export.
+            ## Studio workflow upgrade
+            - Multiple camera/recorder/music sources, with up to 16 video and 16 audio tracks.
+            - Media / Effects tabs; per-clip gain, audio fades, speech EQ/compression and spectral noise reduction.
+            - Basic SDR exposure, contrast, saturation and warmth; fades from/to black.
+            - Assisted waveform sync with confidence, 8-second audition and explicit acceptance.
+            - Autosave recovery copies (5-second idle / 30-second periodic, retaining 10 versions per project).
+            - 4K / 1080p delivery, both 8-bit H.264/AAC Rec.709 MP4.
+
+            Existing v1/v2 projects open. Saving writes v3; use Save As to retain an old-format copy.
+            Select a clip and open Effects; draft settings must be applied before they are saved/exported.
+            Imports append on track 1; + on a media item adds a copy at the playhead, using a free new track if needed.
+            Add tracks with +V / +A; assign clips through the Effects track selector.
+            Noise cleanup is conventional DSP, not AI voice isolation. No drift correction, HDR/Log conversion or overlapping dissolves.
+            Compilation and package checks are not runtime verification of the new editing/audio/render features.
             This is an unsigned early test build. Native Windows interaction/media behavior still needs hands-on checking.
       - name: Mark successful Windows build
         if: startsWith(github.ref, 'refs/tags/v')

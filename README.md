@@ -1,38 +1,159 @@
 # Magic Keyframe
 
-A focused Windows 11 video editor for Byrne Photography's long-form wedding footage.
+A focused Windows wedding-video editor. **v0.4.0 is an unsigned development/test build,
+not a verified client-delivery system.** New editing, DSP, sync, recovery and rendering
+paths need hands-on Windows checking; build/archive checks alone do not prove them.
 
-## Current development scope
-
-- Sony XAVC S 4K 29.97p import
-- 48 kHz external recorder audio import
-- Proxy-based preview
-- Manual audio synchronization with visible waveforms and precise nudging
-- Beginning/end trims and middle cuts on camera and external audio
-- Multi-select moves and linked A/V clips with linked splitting
-- Undo/redo, .mkproj save/load, media thumbnails, zoomable stereo waveforms
-- 4K MP4 delivery with NVIDIA NVENC acceleration
-
-## Windows: download and run (recommended)
+## Windows: download and run
 
 [**Download the latest Windows portable ZIP**](https://github.com/Zero-Escape/magic-keyframe/releases/latest/download/Magic-Keyframe-Windows-Portable.zip)
-· [Release notes and downloads](https://github.com/Zero-Escape/magic-keyframe/releases/latest)
+· [Release notes](https://github.com/Zero-Escape/magic-keyframe/releases/latest)
 
-1. Download **Magic-Keyframe-Windows-Portable.zip** from Releases, not the source-code ZIP.
-2. Right-click the ZIP → **Extract All** into a new folder.
-3. Open that folder and double-click **Magic Keyframe.exe**.
+1. Download **Magic-Keyframe-Windows-Portable.zip**, not GitHub's source-code ZIP.
+2. Close the old app and **Extract All** into a new folder.
+3. Double-click **Magic Keyframe.exe**. Keep the whole folder, including `resources/`.
 
-No Git, Node.js, terminal, or installation required. Keep the entire extracted folder,
-including `resources/`. You can make a desktop shortcut to the executable.
+No Git, Node.js or terminal needed. Make a desktop shortcut if desired. Updates are
+currently download-and-extract, not automatic in-app updates. Keep your original media.
 
-For updates, close the old app, download the latest portable ZIP, and extract it into
-a new folder. Open your `.mkproj` project from **File → Open project**. Keep your original
-media files; project files contain references, not copies of the footage. Automatic
-in-app updating is not implemented. The build is unsigned and still an early test build.
+## Media and tracks
 
-## Developers: Windows clone and run
+Import/drop camera recordings, recorder files and music. Supported extensions include
+MP4, MOV, MXF, WAV, MP3, M4A, AAC, FLAC, OGG and AIFF. The current cap is **200 source
+files and 16 video + 16 audio tracks**. Ten-bit 4:2:2 H.264 sources use FFmpeg-generated
+1080p proxies for playback; originals, not proxies, are used for delivery rendering.
 
-Install **Git for Windows** and **Node.js 24 LTS** first. In PowerShell:
+- Imports append in sequence on track 1 of their type. Existing media is not replaced.
+- **+ on a media item** places another copy at the playhead, using the active compatible
+  track. If that position is occupied, a new track is created instead of overwriting.
+- **+ V / + A** adds a track. In Effects, the **Timeline track** selector moves the
+  active clip between existing tracks, retaining timing and links. Overlaps on the
+  same track are prevented; different tracks can overlap.
+- Higher-numbered visible video tracks cover lower ones, full-frame. There is no
+  picture-in-picture, opacity animation or simultaneous camera-monitor grid yet.
+- Each track has independent audio mute; video tracks also have visibility switches.
+  Hidden video exposes lower tracks/black; its audio is independently controlled.
+  Importing the first recorder/music source mutes the existing camera tracks by default.
+- Signed 5 ms stereo waveform envelopes and media thumbnails are cached locally.
+
+Preview generation and processed-audio preparation can take time on long files.
+Video/audio preview jobs are bounded, and the UI shows pending/failed proxies.
+
+## Select, cut, link and move
+
+Click a clip to select it. **Ctrl/Shift-click** adds/removes clips across tracks.
+**Ctrl+A** selects all; **Esc** clears. Drag a selected clip to move the whole selection
+by one shared delta. Clicking an already-selected clip without dragging collapses the
+selection to that clip/linked group. Source trim points and relative sync are preserved.
+
+**Link** (`Ctrl+L`) locks selected clips into a movement group; **Unlink**
+(`Ctrl+Shift+L`) lets you adjust partners independently. Linked partners select, move,
+nudge and remove together. **Split** (`Ctrl+B`) splits all selected partners crossing
+the playhead into separate left/right linked groups. Select the middle group and
+**Remove/Delete**, then move the ending group left to close the gap. Edge snapping
+helps; **Alt** disables snapping. Gaps remain black/silent until explicitly closed.
+
+Drag clip edges or edit source-second **IN/OUT** fields to trim. Trimming one linked
+partner preserves the timing of its remaining content. ±1 frame nudges the selection.
+Moving/trimming/splitting/removing pauses playback; mute switches can be used while
+playing. Clip editing does not seek the paused playhead. The ruler/empty track space
+seeks while preserving selection. **Space** plays/pauses; the wheel zooms around the
+pointer, and Shift+wheel/horizontal scrolling moves across the timeline. Panel dividers
+resize the ultrawide workspace; the track list scrolls vertically.
+
+## Effects tab
+
+Select a timeline clip, then choose **Effects** beside Media. Controls audition a
+**draft**; click **Apply to clip** to make them part of the project/export. Linked
+partners do not automatically share effects. Optionally apply all settings to selected
+clips of the same type. Reset changes the draft; Apply commits it. Effects are undoable.
+
+### Video and color
+
+Exposure, contrast, saturation and warmth are basic **SDR/Rec.709** controls, not a
+calibrated Kelvin white-balance tool or a full grading suite. GPU preview uses an 8-bit
+proxy; delivery grading uses source media and a higher-precision RGB intermediate.
+Preview is not a mastering/reference display. The comparison toggle bypasses draft
+color/video fades. Without WebGL, a compatibility preview reports that warmth is
+export-only. No automatic HDR/HLG/PQ tone mapping, Log transform or LUT workflow yet;
+convert those sources to SDR externally first.
+
+Fade-in, fade-out and both presets transition **from/to black**, with adjustable
+durations. Fades are clamped to half the clip duration so opposing fades cannot exceed
+the clip. These are not overlapping cross-dissolves. Splitting retains outer fades
+and clears newly created inner-edge fades; refine durations afterward if needed.
+
+### Audio
+
+Per-clip gain (−60 to +18 dB), fade-in/out, voice clarity, and spectral noise reduction.
+Voice clarity uses a rumble high-pass, presence EQ and gentle compression/makeup gain.
+Noise reduction uses FFmpeg spectral denoising. This is **not AI voice isolation** and
+cannot reliably remove competing voices/music. Start gently: heavy processing can
+sound watery or unnatural. Voice/noise settings prepare a cached processed audio
+preview on Apply. Gain/fades audition live. The baseline audio preview is AAC; final
+render processing uses the originals. Longer files can take time to prepare.
+
+Live track/master meters show levels before the master limiter. Red means reduce gain;
+the limiter is not a substitute for balancing sources. Final audio mixes tracks without
+auto-normalizing away clip gains, then applies peak limiting before AAC encoding.
+
+## Assisted automatic audio sync
+
+In Effects → Automatic waveform sync, choose a camera clip with embedded audio and a
+recorder clip. **Unlink either clip first** if it belongs to an existing movement group.
+The analysis compares band-limited RMS envelopes using normalized FFT correlation,
+choosing a strong window of up to 90 seconds within the reference clip. Search ranges
+are the selected clips' source in/out ranges, 5 seconds to 6 hours.
+
+**Find alignment** proposes an offset and high/medium/low confidence; the match score
+is not an accuracy probability. Nothing moves automatically. **Audition both sources**
+plays up to 8 seconds with a temporary placement and isolated camera/recorder tracks.
+**Apply alignment** commits it and can link the pair. A new audio track is created if
+the destination overlaps another clip. Editing the project invalidates stale results.
+Shared speech/distinct sounds are needed; quiet, repeated or unrelated audio may give
+an ambiguous result. There is no drift correction or automatic multicamera batch sync.
+
+## Projects, autosave and recovery
+
+**Ctrl+S** saves `.mkproj`; **Ctrl+Shift+S** saves a copy; **Ctrl+O** opens;
+**Ctrl+N** starts a new project. Unsaved changes have a dot and Save/Discard/Cancel
+prompts on project replacement or close. **Ctrl+Z** and **Ctrl+Shift+Z/Ctrl+Y** cover
+up to 100 session edits, including imports, lanes, links, effects and group moves.
+
+Projects store media references, source trims, placements, links, track switches,
+committed effects and workspace view. **They do not embed footage.** Relative paths
+are tried first, then saved absolute paths. Missing files can be located; canceling a
+load leaves the current project intact. Save after relinking to retain new paths.
+
+Autosave writes separate recovery copies after **5 seconds idle**, with a **30-second
+periodic** check during continuous editing. It retains up to **10 versions per project**
+under `%APPDATA%\magic-key\recovery`. It does not overwrite your manual project. After
+an interrupted session, a startup banner offers Restore/Dismiss. Restoring leaves the
+manual project unchanged until you save. Manual Save/Discard or undoing back to a clean
+baseline clears obsolete recovery copies; in-flight writes/cleanup are serialized.
+Only committed edits are recovered, not un-applied Effects drafts. Manual saves remain
+useful; this is periodic recovery, not a guarantee against every kind of disk/power loss.
+
+v0.4.0 reads existing v1/v2 projects and upgrades them in memory. Saving writes **v3**
+for multiple sources, lanes and effects. Older apps cannot open v3; use **Save as** to
+keep an old-format copy if needed. Source media and preview caches stay local.
+
+## Delivery export
+
+Choose **4K or 1080p**, then Export. Both use compatible **8-bit H.264 4:2:0 Rec.709 MP4
++ 48 kHz stereo AAC**, with fast-start enabled. NVENC is attempted, with x264 fallback.
+The render uses a snapshot taken when Export is clicked; later edits do not change it.
+
+Rendering follows actual placements, stacking, mutes, visibility, color and fades.
+Video gaps are black; camera audio follows its clips; other audio can continue across
+video gaps. Export ends at the last clip on either track (including muted/hidden clips),
+so trim unwanted audio tails to avoid black video after the last picture. Mixed camera
+resolutions are letterboxed to the output canvas. Sequence frame rate comes from the
+first used video source in the media library. No export range/cancel queue yet.
+
+## Developers
+
+Git for Windows and Node.js 24 LTS are required only for source development:
 
 ```powershell
 git clone https://github.com/Zero-Escape/magic-keyframe.git
@@ -41,141 +162,20 @@ npm ci
 npm start
 ```
 
-`npm start` prepares the media runtime, builds the app, and opens the desktop editor.
-The first setup downloads a pinned Windows FFmpeg binary and verifies its SHA-256.
-Client footage, proxies, generated builds, and downloaded executables are not in Git.
+To update a clone, close the app and run `git pull --ff-only`, `npm ci`, `npm start`.
+This does not update an extracted portable folder. `npm run dev` starts hot reload;
+`npm run build` builds renderer and Electron code. `prepare:desktop` pins/checks the
+Windows FFmpeg download. Client media, executables, generated output and caches are
+ignored by Git. `package:portable` builds a ZIP; optional `package:win` builds NSIS.
+Windows Actions builds main artifacts; unused version tags publish portable Releases
+and SHA256SUMS. Installer packaging does not block portable releases. The sync worker
+is unpacked outside ASAR and uses only Node built-ins.
 
-### Updating your clone
+`npm run verify:media` is the **legacy** source-cut regression script; it does not
+cover the current multi-track/effects render or new preview/recovery/sync paths.
+No new runtime/interaction/media tests were run during this feature implementation.
 
-Close the app, open PowerShell in the cloned `magic-keyframe` folder, then run:
-
-```powershell
-git pull --ff-only
-npm ci
-npm start
-```
-
-This runs the app from your clone. It does **not** update a separate portable folder
-you previously extracted. To make a new standalone Windows ZIP instead, run
-`npm run package:portable` and use the ZIP in `release/`.
-
-### Development and checks
-
-`npm run dev` launches the hot-reloading Vite/Electron development mode.
-`npm run verify:media` contains the legacy source-cut media regression checks; it
-does not yet cover placement-aware timeline rendering or linked editing.
-Windows GitHub Actions builds a portable ZIP on pushes to main;
-tagged version builds publish the portable ZIP and its SHA-256 to GitHub Releases.
-The installer build is separate (`npm run package:win`) and does not block portable releases. GitHub Actions runs must finish before
-their downloadable artifacts are available.
-
-## Editing
-
-Drop local media anywhere in the project window, or use Import. This build uses one
-camera source and one optional recorder source; both can be split into many clips.
-
-### Select, move and link clips
-
-- **Click** a clip to select it. **Ctrl+click** or **Shift+click** adds/removes clips
-  from the selection, across both tracks. **Ctrl+A** selects all clips; **Esc** clears.
-- Drag any selected clip body to move **the whole selection by the same amount**.
-  Source trim points and relative timing do not change. Only the chosen clips move;
-  dragging an audio clip no longer shifts every audio section automatically.
-- Align the recorder audio, select the matching video and audio, then click **Link**
-  (**Ctrl+L**). A chain icon marks linked clips. Clicking either partner selects the
-  group; moving or nudging it moves all partners without changing their sync.
-- Click **Unlink** (**Ctrl+Shift+L**) when you want to adjust a partner independently.
-- Edges snap to neighboring clip edges and the playhead while dragging. Hold **Alt**
-  to disable snapping. Moves stop at same-track neighbors rather than overwriting
-  them. Video cannot move before zero; audio can have pre-roll before zero.
-
-### Cut out a middle section and close the gap
-
-1. Link the synchronized video/audio first.
-2. Select the pair, scrub the ruler to the start of the unwanted section, then
-   click **Split** (**Ctrl+B**). Scrub to its end and split again.
-3. Click the middle video or audio clip, then **Remove** (or **Delete**). Both linked
-   middle pieces are removed.
-4. Click either remaining ending clip and drag left until it snaps to the earlier
-   pair. The ending video and audio move together, keeping their sync.
-
-Splitting a linked group cuts all partners crossing that timeline point and creates
-**separate left and right linked groups**. Moving the ending group does not move the
-beginning group. You can also Ctrl/Shift-select unlinked video and audio pieces and
-move them together without linking them permanently.
-
-Drag either edge to refine a trim; the IN/OUT fields use source seconds. Trimming
-one linked partner changes its boundary, not the timing of its remaining content.
-The ±1 frame buttons nudge the selection, including linked partners. Moving, trimming, splitting or removing clips pauses playback. Selecting, trimming, or dragging clips does not move the paused playhead;
-use the ruler or empty track space to seek. Scrubbing retains the clip selection.
-
-Cuts leave gaps until you move clips to close them. **Preview and export now honor
-the actual timeline**, including black video/silent camera audio in gaps. External
-audio can continue across a video gap. Export ends at the last clip on either track,
-so trim unwanted audio tails if you do not want black video after the last picture.
-
-The mouse wheel zooms around the pointer; Shift+wheel or horizontal trackpad scrolling
-scrolls. Sidebar/timeline dividers resize the workspace. Waveforms show signed 5 ms
-stereo envelopes, with more detail as you zoom; waveform analysis and thumbnails cache
-locally.
-
-Each track has an independent mute switch. Video 1 also has a visibility switch. These
-settings affect both preview and export; hidden video exports as black with audio
-controlled separately. Importing external audio mutes camera audio by default; unmute
-both to compare sync (both enabled sources are mixed on export).
-
-The current build handles one video and one optional external audio track. It exports
-the arranged timeline as one 8-bit H.264 4:2:0 MP4 with AAC audio. Multiple source
-files per track, automatic waveform sync, and extra tracks are not yet implemented.
-
-For a Windows test build from Linux, run `npm run package:portable`. The setup
-step obtains a Windows-native FFmpeg executable instead of packaging the Linux one.
-The portable ZIP runs after extraction; it is not an installer. Its Windows media
-executable is unpacked outside ASAR so proxy and export processes can execute it.
-
-The placement-aware render path, linked editing and native Windows interactions need
-hands-on checking; compilation and archive checks are not runtime verification.
-
-## Projects and undo
-
-Use **File → Save project** / **Ctrl+S** to write a `.mkproj` file. **Ctrl+Shift+S**
-saves a copy; **Ctrl+O** opens a project; **Ctrl+N** starts a new one. The toolbar has
-New, Open, and Save buttons too. Unsaved edits are marked with a dot, and opening,
-starting a new project, or closing the editor prompts Save / Discard / Cancel.
-
-Projects store imported media references, all video/audio source cuts and timeline
-positions, clip links, mute/visibility settings, playhead position, zoom and panel sizes. **They do
-not embed your original footage.** Keep the originals; move them together with the
-project when possible. Relative paths are tried first, then the saved absolute path.
-If media is missing, the editor asks you to locate it; cancel leaves your current
-project intact. After locating moved files, save the project to retain the new paths. Proxies, thumbnails and waveforms regenerate/cache locally.
-
-**Ctrl+Z** undoes and **Ctrl+Shift+Z** or **Ctrl+Y** redoes up to 100 project edits,
-including imports, trims, splits, removal, group moves, linking/unlinking and track switches.
-A drag is one undo step. Playback, selection and zoom are not edit-history steps.
-History is session-only and starts fresh when a project is opened; your saved edits
-are retained. Save is manual (no autosave/recovery yet).
-
-### Project compatibility
-
-Version 0.3.0 reads existing version-1 projects from 0.2.0, preserving their visible
-source-time positions and recorder offset. Saving writes **version 2**, which stores
-independent placements and links. Version-2 projects cannot be reopened in 0.2.0;
-use **Save as** to keep an old-format copy if you need one. Links survive save/load.
-Existing source-cut gaps now remain black/silent on export until closed on the timeline.
-
-### Opening `.mkproj` files from Explorer
-
-The optional Windows **Setup installer** is configured to register the project file type. The portable ZIP
-does not alter your Windows settings automatically. When running from a Git clone,
-you can register the current checkout for your Windows account (no admin needed):
-
-```powershell
-npm run associate:projects
-```
-
-Keep the clone at that location afterward, or rerun that command after moving it.
-Windows may ask which application to use for `.mkproj`; choose the registered app.
-Double-clicking a project opens it in the existing editor, with an unsaved-changes
-prompt if needed. Projects opened from Explorer during import/export are queued until the operation finishes. Registry/file-association behavior still needs
-a hands-on Windows check; a successful Linux build cannot prove that behavior.
+The optional Setup installer is configured for `.mkproj` association. Portable ZIPs do
+not change registry settings. For a source checkout, `npm run associate:projects`
+registers that checkout per-user; keep its path in place or re-register after moving.
+Use File → Open in portable builds. Windows association still needs hands-on checking.
