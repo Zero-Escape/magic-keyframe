@@ -36,6 +36,8 @@ interface Window {
     cancelProxies: () => Promise<void>
     onProxyProgress: (callback: (progress: ProxyProgress) => void) => () => void
     generateProxy: (filePath: string) => Promise<{ path: string; url: string }>
-    exportVideo: (request: { project: ProjectData; quality: '2160p' | '1080p' }) => Promise<{ canceled: boolean; path?: string }>
+    cancelExport: (id: string) => Promise<void>
+    onExportProgress: (callback: (progress: import('../electron/export-settings').ExportProgress) => void) => () => void
+    exportVideo: (request: { id: string; project: ProjectData; settings: import('../electron/export-settings').ExportSettings }) => Promise<{ canceled: boolean; path?: string }>
   }
 }

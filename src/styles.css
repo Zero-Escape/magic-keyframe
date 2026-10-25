@@ -150,3 +150,15 @@ button { font: inherit; color: inherit; }
 .overlap-marker.in { left:0; }.overlap-marker.out { right:0; }
 .overlap-marker span { position:absolute; bottom:3px; left:10px; color:#bcefff; font-size:9px; white-space:nowrap; background:#10232bcb; padding:1px 3px; }
 .video-fade-handle:disabled { opacity:.25; cursor:not-allowed; }
+
+.export-backdrop { position:fixed; inset:0; z-index:100; background:#000b; display:grid; place-items:center; padding:24px; }
+.export-dialog { width:min(720px,95vw); max-height:92vh; overflow:auto; background:#14131b; border:1px solid #4a3a60; border-radius:14px; padding:22px; box-shadow:0 20px 80px #000b; }
+.export-dialog header,.export-dialog footer { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.export-dialog h2 { margin:0; font-size:20px; }.export-dialog h3 { font-size:16px; }
+.export-dialog footer { margin-top:20px; justify-content:flex-end; }.export-dialog .muted-copy { font-size:12px; line-height:1.5; }
+.export-settings-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:18px 0; }
+.export-settings-grid label { display:flex; flex-direction:column; gap:6px; font-size:12px; color:#c6bfd2; }
+.export-settings-grid select,.export-settings-grid input { width:100%; padding:9px; background:#211c2b; color:#eee7f7; border:1px solid #494052; border-radius:6px; }
+.export-resource-note { padding:12px; font-size:12px; line-height:1.6; background:#251d32; border-radius:8px; color:#d2c3e6; }
+.export-dialog progress { width:100%; height:18px; accent-color:#ae7bf3; }.export-progress-message { font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+.export-statistics { display:flex; flex-wrap:wrap; gap:14px; margin-top:10px; font-size:12px; color:#c5bbd2; }.export-output { overflow-wrap:anywhere; font-size:12px; }

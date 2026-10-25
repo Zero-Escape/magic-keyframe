@@ -55,6 +55,14 @@ jobs:
             Open your existing .mkproj file using File → Open project. Projects reference your original media; keep that footage.
             Use File → Associate .mkproj files with this app to register this portable location; Windows may still require Open with → Always.
 
+            ## Bounded export and progress (0.6.0)
+            - Export settings dialog: resolution, FPS, quality, bitrate ceiling, encoder, audio bitrate and resource mode.
+            - Live stage percentage, elapsed/estimated remaining time, encoder status heartbeat and Cancel.
+            - Sequential short render pieces instead of a whole-timeline multi-branch decoder graph.
+            - Limited decode/filter/encode threads, below-normal process priority, paused preview/proxies during export.
+            - Lossless intermediate audio; AAC encoded once at finalization. Extra temporary disk space required.
+            - Conservative limits do not guarantee peak resource use on every machine; runtime validation remains necessary.
+
             ## Optional proxies and overlap transitions (0.5.1)
             - One-second decoder look-ahead prepares the next clip without generating a full-file proxy.
             - Original-media preview by default; optional Use proxies toggle in the preview toolbar.

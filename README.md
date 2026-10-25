@@ -1,6 +1,6 @@
 # Magic Keyframe
 
-A focused Windows wedding-video editor. **v0.5.1 is an unsigned development/test build,
+A focused Windows wedding-video editor. **v0.6.0 is an unsigned development/test build,
 not a verified client-delivery system.** New editing, DSP, sync, recovery and rendering
 paths need hands-on Windows checking; build/archive checks alone do not prove them.
 
@@ -153,7 +153,9 @@ keep an old-format copy if needed. Source media and preview caches stay local.
 
 ## Delivery export
 
-Choose **4K or 1080p**, then Export. Both use compatible **8-bit H.264 4:2:0 Rec.709 MP4
+Click **Export** to review adjustable settings, then choose a destination and start.
+The default is 1080p, source frame rate, good quality, Auto encoder and Low impact.
+Choose 4K explicitly when required. Both use compatible **8-bit H.264 4:2:0 Rec.709 MP4
 + 48 kHz stereo AAC**, with fast-start enabled. NVENC is attempted, with x264 fallback.
 The render uses a snapshot taken when Export is clicked; later edits do not change it.
 
@@ -244,3 +246,39 @@ Fit shows the full edit. Use Save As to keep the original older-project file.
 Preview decoder slots look ahead up to one second to prepare the next video/audio
 clip. Incoming overlap video stays transparent until a frame is decoded, leaving
 the outgoing picture visible while it prepares; this is not full-file transcoding.
+
+### Bounded export and progress (0.6.0)
+
+The export dialog exposes resolution, source/explicit frame rate, quality, video
+bitrate ceiling, Auto/NVIDIA/CPU encoder, Low impact/Balanced resource mode and audio
+bitrate. Delivery stays 8-bit H.264 4:2:0 Rec.709 MP4 with stereo AAC at 48 kHz.
+
+The previous whole-timeline split/overlay graph could buffer decoded frames for
+future cuts, risking severe RAM pressure. Export now renders short, sequential
+pieces with individually sought/capped source ranges, pruning fully covered video
+layers. Low impact uses up to 2 encoder threads, one decoder thread per input and
+one filter worker; Balanced uses up to 4 encoder threads. Both request below-normal
+process priority. Preview is unmounted and queued/running proxy encodes are canceled
+for export. Proxies remain off until explicitly enabled again. These are conservative
+limits, not a hard OS-wide RAM/CPU reservation or a guarantee against all freezes.
+
+Piece boundaries are frame-aligned, with retained clip-local effect times so fades
+and overlaps do not restart each piece. Intermediate audio is lossless PCM; delivery
+AAC is encoded once during finalization to avoid per-piece AAC priming gaps. Video
+is stream-copied into the final MP4. Temporary pieces use destination-drive space;
+a conservative free-space estimate is checked before rendering. Very complex slices
+(over four video inputs or twelve total simultaneous inputs) fail with an actionable
+message rather than building an unbounded render.
+
+Progress reports actual FFmpeg output timestamps with a one-second status heartbeat.
+Rendering and finalization each have their **own** percent/ETA; the bar resets when
+finalization starts. ETA is an estimate, and MP4 fast-start/index writes may take
+additional time near the end. Cancel stops the active encoder and removes generated
+temporary pieces. The final destination is replaced only after successful completion;
+original media is never an export destination. A hard process kill/power loss can
+leave a hidden .mk-render-* scratch directory on the destination drive, which can be
+removed after confirming no export is active.
+
+Local/Windows compilation and archive checks do not prove Windows peak memory use,
+UI responsiveness, playback accuracy, long-render sync or output quality. These new
+paths still require a hands-on real-media run before client delivery.

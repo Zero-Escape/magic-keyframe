@@ -7,7 +7,9 @@ import { access, mkdir, rename, stat, unlink, readFile, writeFile } from 'node:f
 import { readProject, writeProject, validateProject, type Project } from './project-file.js'
 import { analyzeWaveform, audioThumbnail, type WaveformData } from './waveform.js'
 import packagedFfmpegStaticPath from 'ffmpeg-static'
-import { buildStudioExport, type RenderMedia } from './studio-export.js'
+import { type RenderMedia } from './studio-export.js'
+import { renderBounded, type ExportTask } from './bounded-export.js'
+import { validateExportSettings, type ExportSettings, type ExportProgress } from './export-settings.js'
 import { effects, audioProcessing, type ClipEffects } from './effects.js'
 import { autosave, recoveryList, discardRecovery, recoveryInfo } from './recovery.js'
 import { decodeEnvelope, findSync } from './sync-engine.js'
@@ -122,37 +124,43 @@ async function buildProxy(filePath: string, task: ProxyTask) {
   return { path: outputPath, url: pathToFileURL(outputPath).toString() }
 }
 
-type ExportRequest = { project: Project; quality: '2160p' | '1080p' }
+type ExportRequest = { id: string; project: Project; settings: ExportSettings }
+let activeExport: ExportTask | undefined
 async function exportVideo(request: ExportRequest) {
+  if (activeExport) throw new Error('An export is already running.')
   if (!packagedFfmpegPath) throw new Error('FFmpeg is unavailable')
-  const project = validateProject(request.project), usedIds = new Set([...project.edit.video, ...project.edit.audio].map((c) => c.mediaId))
-  if (!project.edit.video.length) throw new Error('Add at least one video clip before exporting.')
-  const media: RenderMedia[] = []
-  let fps = 29.97
-  for (const item of project.media.filter((m) => usedIds.has(m.id))) {
-    const meta = await inspectMedia(item.path)
-    if (item.kind === 'video' && !meta.video) throw new Error(`No video in ${path.basename(item.path)}`)
-    if (project.edit[item.kind].some((c) => c.mediaId === item.id && c.end > meta.duration + .05)) throw new Error(`Invalid source range for ${path.basename(item.path)}`)
-    if (media.every((m) => !m.video) && meta.video?.fps) fps = meta.video.fps
-    media.push({ id: item.id, path: item.path, audio: !!meta.audio, video: !!meta.video })
-  }
-  const result = await dialog.showSaveDialog({ title: 'Export delivery MP4', defaultPath: path.join(app.getPath('videos'), 'Magic-Keyframe-Export.mp4'), filters: [{ name: 'MP4 video', extensions: ['mp4'] }] })
-  if (result.canceled || !result.filePath) return { canceled: true }
-  if (project.media.some((m) => path.resolve(m.path).toLowerCase() === path.resolve(result.filePath!).toLowerCase())) throw new Error('Export cannot overwrite source media.')
-  const width = request.quality === '1080p' ? 1920 : 3840, height = request.quality === '1080p' ? 1080 : 2160
-  const filter = buildStudioExport(project.edit, media, width, height, fps)
-  const filterPath = path.join(app.getPath('userData'), `export-${process.pid}-${Date.now()}.txt`)
-  const pending = path.join(path.dirname(result.filePath), `.magic-keyframe-${process.pid}-${Date.now()}.mp4`)
-  const args = ['-y', '-v', 'error', ...media.flatMap((m) => ['-i', m.path]), '-filter_complex_threads', '2', '-filter_complex_script', filterPath, '-map', '[vout]', '-map', '[aout]']
-  const tail = ['-pix_fmt', 'yuv420p', '-profile:v', 'high', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709', '-color_range', 'tv', '-c:a', 'aac', '-b:a', '256k', '-ar', '48000', '-movflags', '+faststart', pending]
+  if (typeof request.id !== 'string' || !request.id || request.id.length > 100) throw new Error('Invalid export job ID.')
+  const task: ExportTask = { id: request.id, canceled: false }; activeExport = task
+  const started = Date.now(), emit = (event: ExportProgress) => mainWindow?.webContents.send('media:export-progress', event)
   try {
-    await writeFile(filterPath, filter)
-    try { await runProcess(unpackedPath(packagedFfmpegPath), [...args, '-c:v', 'h264_nvenc', '-preset', 'p5', '-cq', '19', ...tail]) }
-    catch { await runProcess(unpackedPath(packagedFfmpegPath), [...args, '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', ...tail]) }
-    await rename(pending, result.filePath)
-  } catch (error) { await unlink(pending).catch(() => {}); throw error }
-  finally { await unlink(filterPath).catch(() => {}) }
-  return { canceled: false, path: result.filePath }
+    for (const proxy of proxyTasks.values()) { proxy.canceled = true; proxy.child?.kill() }
+    await Promise.allSettled([...proxyJobs.values()])
+    const settings = validateExportSettings(request.settings), project = validateProject(request.project), usedIds = new Set([...project.edit.video, ...project.edit.audio].map((c) => c.mediaId))
+    if (!project.edit.video.length) throw new Error('Add at least one video clip before exporting.')
+    emit({ id: task.id, phase: 'preparing', elapsed: 0, message: 'Checking sources and preparing export…' })
+    const media: RenderMedia[] = []; let fps = 29.97
+    for (const item of project.media.filter((m) => usedIds.has(m.id))) {
+      if (task.canceled) return { canceled: true }
+      emit({ id: task.id, phase: 'preparing', elapsed: (Date.now() - started) / 1000, message: `Checking source ${media.length + 1}: ${path.basename(item.path)}` })
+      const meta = await inspectMedia(item.path)
+      if (item.kind === 'video' && !meta.video) throw new Error(`No video in ${path.basename(item.path)}`)
+      if (project.edit[item.kind].some((c) => c.mediaId === item.id && c.end > meta.duration + .05)) throw new Error(`Invalid source range for ${path.basename(item.path)}`)
+      if (media.every((m) => !m.video) && meta.video?.fps) fps = meta.video.fps
+      media.push({ id: item.id, path: item.path, audio: !!meta.audio, video: !!meta.video })
+    }
+    if (task.canceled) return { canceled: true }
+    const result = await dialog.showSaveDialog(mainWindow!, { title: 'Export delivery MP4', defaultPath: path.join(app.getPath('videos'), 'Magic-Keyframe-Export.mp4'), filters: [{ name: 'MP4 video', extensions: ['mp4'] }] })
+    if (result.canceled || !result.filePath || task.canceled) return { canceled: true }
+    const output = result.filePath.toLowerCase().endsWith('.mp4') ? result.filePath : `${result.filePath}.mp4`
+    if (project.media.some((m) => path.resolve(m.path).toLowerCase() === path.resolve(output).toLowerCase())) throw new Error('Export cannot overwrite source media.')
+    await renderBounded(unpackedPath(packagedFfmpegPath), project.edit, media, settings, fps, output, task, emit)
+    return { canceled: false, path: output }
+  } catch (error) {
+    const message = task.canceled ? 'Export canceled. Temporary render files were cleaned up.' : String(error)
+    emit({ id: task.id, phase: task.canceled ? 'canceled' : 'error', elapsed: (Date.now() - started) / 1000, message })
+    if (task.canceled) return { canceled: true }
+    throw error
+  } finally { activeExport = undefined }
 }
 const audioJobs = new Map<string, Promise<{ url: string }>>()
 async function audioPreview(filePath: string, value?: Partial<ClipEffects>) {
@@ -344,6 +352,7 @@ ipcMain.handle('media:cancel-proxies', async () => {
   await Promise.allSettled([...proxyJobs.values()])
 })
 ipcMain.handle('media:export', (_event, request: ExportRequest) => exportVideo(request))
+ipcMain.handle('media:cancel-export', (_event, id: string) => { if (activeExport?.id === id) { activeExport.canceled = true; activeExport.child?.kill() } })
 
 ipcMain.on('project:dirty', (_event, dirty: boolean) => { projectDirty = Boolean(dirty) })
 ipcMain.on('project:ready', () => { rendererReady = true; if (pendingProject) { const file = pendingProject; pendingProject = undefined; sendCommand('open', file) } })
@@ -419,7 +428,7 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('before-quit', () => { for (const task of proxyTasks.values()) { task.canceled = true; task.child?.kill() } })
+app.on('before-quit', () => { if (activeExport) { activeExport.canceled = true; activeExport.child?.kill() }; for (const task of proxyTasks.values()) { task.canceled = true; task.child?.kill() } })
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
