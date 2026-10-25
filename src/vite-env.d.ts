@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 interface WaveformData { bucketSeconds: number; channels: { min: number[]; max: number[] }[] }
 interface ProjectData {
-  format: 'magic-keyframe-project'; version: 3
+  format: 'magic-keyframe-project'; version: 4
   media: { id: string; kind: 'video' | 'audio'; path: string }[]
   edit: import('../electron/timeline').TimelineEdit
   view: { position: number; zoom: number; timelineHeight: number; sidebarWidth: number }
@@ -15,6 +15,7 @@ interface ImportedMedia {
 }
 interface LoadedProject { path?: string; project: ProjectData; relinked: boolean; recovered?: boolean; session?: string; media: (ImportedMedia & { id: string; kind: 'video' | 'audio' })[] }
 interface RecoveryInfo { file: string; projectPath?: string; created: number; title: string; session: string }
+interface ProxyProgress { path: string; status: 'queued' | 'running' | 'ready' | 'error' | 'canceled'; percent: number; etaSeconds?: number }
 interface Window {
   magicKey?: {
     autosave: (project: ProjectData, filePath: string | undefined, session: string) => Promise<number>
@@ -32,6 +33,8 @@ interface Window {
     chooseMedia: () => Promise<ImportedMedia[]>
     getPathForFile: (file: File) => string
     importMedia: (paths: string[]) => Promise<ImportedMedia[]>
+    cancelProxies: () => Promise<void>
+    onProxyProgress: (callback: (progress: ProxyProgress) => void) => () => void
     generateProxy: (filePath: string) => Promise<{ path: string; url: string }>
     exportVideo: (request: { project: ProjectData; quality: '2160p' | '1080p' }) => Promise<{ canceled: boolean; path?: string }>
   }

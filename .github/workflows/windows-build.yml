@@ -55,6 +55,15 @@ jobs:
             Open your existing .mkproj file using File → Open project. Projects reference your original media; keep that footage.
             Use File → Associate .mkproj files with this app to register this portable location; Windows may still require Open with → Always.
 
+            ## Optional proxies and overlap transitions (0.5.0)
+            - Original-media preview by default; optional Use proxies toggle in the preview toolbar.
+            - Proxy generation percentage/progress bar and per-file ETA; turning off cancels pending encodes.
+            - Direct playback depends on browser codec support; 10-bit 4:2:2 may still need proxies.
+            - Drag adjacent same-track clips into an edge overlap: video cross-dissolve and equal-power audio crossfade.
+            - Linked moves preserve offsets. Two-way overlaps only; split outside transition boundaries.
+            - All clips stop at zero; legacy negative pre-roll shifts the complete timeline right without changing sync.
+            - Timeline extent expands during dragging. Saving writes v4; use Save As to keep older files.
+
             ## Playback and Windows workflow fixes (0.4.2)
             - Contiguous same-source splits avoid needless seeks; pause/resume no longer seeks by itself.
             - Graded preview holds the last decoded frame while seeking/buffering instead of clearing black.
@@ -78,11 +87,11 @@ jobs:
             - Autosave recovery copies (5-second idle / 30-second periodic, retaining 10 versions per project).
             - 4K / 1080p delivery, both 8-bit H.264/AAC Rec.709 MP4.
 
-            Existing v1/v2 projects open. Saving writes v3; use Save As to retain an old-format copy.
+            Existing v1/v2/v3 projects open. Saving writes v4; use Save As to retain an old-format copy.
             Select a clip and open Effects; draft settings must be applied before they are saved/exported.
             Imports append on track 1; + on a media item adds a copy at the playhead, using a free new track if needed.
             Add tracks with +V / +A; assign clips through the Effects track selector.
-            Noise cleanup is conventional DSP, not AI voice isolation. No drift correction, HDR/Log conversion or overlapping dissolves.
+            Noise cleanup is conventional DSP, not AI voice isolation. No drift correction, HDR/Log conversion or three-way/nested transitions.
             Compilation and package checks are not runtime verification of the new editing/audio/render features.
             This is an unsigned early test build. Native Windows interaction/media behavior still needs hands-on checking.
       - name: Mark successful Windows build

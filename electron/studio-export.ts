@@ -1,5 +1,5 @@
 import { effects, audioProcessing, videoProcessing } from './effects.js'
-import { endAt, timelineEnd, type TimelineEdit, type Segment } from './timeline.js'
+import { endAt, timelineEnd, transitionEdges, type TimelineEdit, type Segment } from './timeline.js'
 export type RenderMedia = { id: string; path: string; audio: boolean; video: boolean }
 export function buildStudioExport(edit: TimelineEdit, media: RenderMedia[], width: number, height: number, fps: number) {
   const duration = timelineEnd(edit), filters: string[] = [], videoLabels = new Map<string, string>(), audioLabels = new Map<string, string>()
@@ -19,12 +19,13 @@ export function buildStudioExport(edit: TimelineEdit, media: RenderMedia[], widt
   })
   filters.push(`color=c=black:s=${width}x${height}:r=${fps.toFixed(8)}:d=${duration.toFixed(6)},format=yuv420p,setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709[base0]`)
   visible.sort((a, b) => a.lane - b.lane || a.at - b.at).forEach((c, i) => {
-    const d = c.end - c.start, e = effects(c.effects), fx = videoProcessing(e, d)
+    const d = c.end - c.start, blend = transitionEdges(edit.video, c), e = effects(c.effects), fx = videoProcessing({ ...e, fadeIn: blend.incoming ? 0 : e.fadeIn, fadeOut: blend.outgoing ? 0 : e.fadeOut }, d)
     const chain = [
       `trim=start=${c.start.toFixed(6)}:end=${c.end.toFixed(6)}`, 'setpts=PTS-STARTPTS', `fps=${fps.toFixed(8)}`,
       `scale=${width}:${height}:force_original_aspect_ratio=decrease`, 'setsar=1', ...fx,
       'scale=out_color_matrix=bt709:out_range=tv', 'format=yuv420p',
       `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`, 'setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709',
+      'format=yuva420p', ...(blend.incoming ? [`fade=t=in:st=0:d=${blend.incoming.toFixed(6)}:alpha=1`] : []),
       `setpts=PTS+${c.at.toFixed(6)}/TB`,
     ]
     filters.push(`[${videoLabels.get(c.id)}]${chain.join(',')}[vc${i}]`)
@@ -33,7 +34,10 @@ export function buildStudioExport(edit: TimelineEdit, media: RenderMedia[], widt
   filters.push(`[base${visible.length}]trim=duration=${duration.toFixed(6)},setpts=PTS-STARTPTS[vout]`)
   const labels: string[] = []
   audible.forEach((c: Segment, i) => {
-    const e = effects(c.effects), d = c.end - c.start, chain = [`atrim=start=${c.start.toFixed(6)}:end=${c.end.toFixed(6)}`, 'asetpts=PTS-STARTPTS', 'aresample=48000', 'aformat=channel_layouts=stereo', ...audioProcessing(e), `volume=${(10 ** (e.gainDb / 20)).toFixed(8)}`]
+    const track = edit.video.some((v) => v.id === c.id) ? edit.video : edit.audio, blend = transitionEdges(track, c)
+    const stored = effects(c.effects), e = { ...stored, audioFadeIn: blend.incoming ? 0 : stored.audioFadeIn, audioFadeOut: blend.outgoing ? 0 : stored.audioFadeOut }, d = c.end - c.start, chain = [`atrim=start=${c.start.toFixed(6)}:end=${c.end.toFixed(6)}`, 'asetpts=PTS-STARTPTS', 'aresample=48000', 'aformat=channel_layouts=stereo', ...audioProcessing(e), `volume=${(10 ** (e.gainDb / 20)).toFixed(8)}`]
+    if (blend.incoming) chain.push(`afade=t=in:st=0:d=${blend.incoming.toFixed(6)}:curve=qsin`)
+    if (blend.outgoing) chain.push(`afade=t=out:st=${(d - blend.outgoing).toFixed(6)}:d=${blend.outgoing.toFixed(6)}:curve=qsin`)
     if (e.audioFadeIn > 0) chain.push(`afade=t=in:st=0:d=${Math.min(e.audioFadeIn, d / 2).toFixed(6)}`)
     if (e.audioFadeOut > 0) { const fade = Math.min(e.audioFadeOut, d / 2); chain.push(`afade=t=out:st=${(d - fade).toFixed(6)}:d=${fade.toFixed(6)}`) }
     if (c.at < 0) chain.push(`atrim=start=${(-c.at).toFixed(6)}`, 'asetpts=PTS-STARTPTS')

@@ -1,6 +1,6 @@
 # Magic Keyframe
 
-A focused Windows wedding-video editor. **v0.4.2 is an unsigned development/test build,
+A focused Windows wedding-video editor. **v0.5.0 is an unsigned development/test build,
 not a verified client-delivery system.** New editing, DSP, sync, recovery and rendering
 paths need hands-on Windows checking; build/archive checks alone do not prove them.
 
@@ -21,14 +21,14 @@ currently download-and-extract, not automatic in-app updates. Keep your original
 Import/drop camera recordings, recorder files and music. Supported extensions include
 MP4, MOV, MXF, WAV, MP3, M4A, AAC, FLAC, OGG and AIFF. The current cap is **200 source
 files and 16 video + 16 audio tracks**. Ten-bit 4:2:2 H.264 sources use FFmpeg-generated
-720p short-GOP proxies for playback; originals, not proxies, are used for delivery rendering.
+Original-media preview is the default. Optional 720p short-GOP proxies can be enabled in the preview toolbar; originals, not proxies, are used for delivery rendering.
 
 - Imports append in sequence on track 1 of their type. Existing media is not replaced.
 - **+ on a media item** places another copy at the playhead, using the active compatible
   track. If that position is occupied, a new track is created instead of overwriting.
 - **+ V / + A** adds a track. In Effects, the **Timeline track** selector moves the
-  active clip between existing tracks, retaining timing and links. Overlaps on the
-  same track are prevented; different tracks can overlap.
+  active clip between existing tracks, retaining timing and links. Dragging clip edges
+  into an adjacent clip on the same track automatically creates a two-way transition.
 - Higher-numbered visible video tracks cover lower ones, full-frame. There is no
   picture-in-picture, opacity animation or simultaneous camera-monitor grid yet.
 - Each track has independent audio mute; video tracks also have visibility switches.
@@ -37,7 +37,10 @@ files and 16 video + 16 audio tracks**. Ten-bit 4:2:2 H.264 sources use FFmpeg-g
 - Signed 5 ms stereo waveform envelopes and media thumbnails are cached locally.
 
 Preview generation and processed-audio preparation can take time on long files.
-Video/audio preview jobs are bounded, and the UI shows pending/failed proxies.
+Video/audio preview jobs are bounded. Proxies are off by default; the Use proxies
+toolbar toggle starts/cancels generation, with a duration-weighted overall percentage
+and per-file percentage/ETA. Direct decoding depends on Chromium codec support;
+10-bit 4:2:2 H.264 may need proxies. Nothing starts automatically to conceal a decode failure.
 
 ## Select, cut, link and move
 
@@ -54,7 +57,8 @@ the playhead into separate left/right linked groups. Select the middle group and
 helps; **Alt** disables snapping. Gaps remain black/silent until explicitly closed.
 
 Drag clip edges or edit source-second **IN/OUT** fields to trim. Trimming one linked
-partner preserves the timing of its remaining content. ±1 frame nudges the selection.
+partner preserves the timing of its remaining content. ±1 frame steps the playhead;
+Alt+left/right nudges the selection. No clips can be moved/extended before zero.
 Moving/trimming/splitting/removing pauses playback; mute switches can be used while
 playing. Clip editing does not seek the paused playhead. The ruler/empty track space
 seeks while preserving selection. **Space** plays/pauses; the wheel zooms around the
@@ -80,7 +84,7 @@ convert those sources to SDR externally first.
 
 Fade-in, fade-out and both presets transition **from/to black**, with adjustable
 durations. Fades are clamped to half the clip duration so opposing fades cannot exceed
-the clip. These are not overlapping cross-dissolves. Splitting retains outer fades
+the clip. These standalone fades go through black; overlap transitions instead dissolve directly between pictures. Splitting retains outer fades
 and clears newly created inner-edge fades; refine durations afterward if needed.
 
 Video clips also have small gold **triangles along their top edge**. Drag the left
@@ -143,8 +147,8 @@ baseline clears obsolete recovery copies; in-flight writes/cleanup are serialize
 Only committed edits are recovered, not un-applied Effects drafts. Manual saves remain
 useful; this is periodic recovery, not a guarantee against every kind of disk/power loss.
 
-v0.4.0 reads existing v1/v2 projects and upgrades them in memory. Saving writes **v3**
-for multiple sources, lanes and effects. Older apps cannot open v3; use **Save as** to
+v0.5.0 reads existing v1/v2/v3 projects and upgrades them in memory. Saving writes **v4**
+for overlap transitions and non-negative placements. Older apps cannot open v4; use **Save as** to
 keep an old-format copy if needed. Source media and preview caches stay local.
 
 ## Delivery export
@@ -194,8 +198,8 @@ Use File → Open in portable builds. Windows association still needs hands-on c
 Contiguous splits reuse the decoder without a redundant seek. Pausing does not seek
 by itself; the graded preview retains the last decoded frame during short buffering
 or seeks (intentional empty timeline gaps remain empty). New proxies use 720p,
-15-frame GOPs and no B-frames for lighter decoding and faster seeking. A one-time
-proxy rebuild is required; originals and export quality are unchanged.
+15-frame GOPs and no B-frames for lighter decoding and faster seeking. When optional proxies are enabled, a one-time
+proxy rebuild may be required; originals and export quality are unchanged.
 
 The timeline −1/+1 frame buttons and left/right arrows step the **playhead**. To move
 selected/linked clips one frame instead, use Alt+left/right. Collision constraints
@@ -214,3 +218,25 @@ shows which media is being inspected; large older projects may need audio/wavefo
 cache generation. Versions 1–3 remain supported. A specific legacy opening failure
 needs the project file/error to diagnose; this update does not claim all such
 failures have been reproduced or resolved.
+
+### Automatic overlap transitions (0.5.0)
+
+Select/link video and audio partners, then drag them left over the ends of preceding
+clips **on their respective tracks**. The overlap duration is the transition length.
+Video uses a direct alpha cross-dissolve (not a dip to black); audio uses equal-power
+quarter-sine crossfades before the master limiter. Move clips apart to shorten/remove
+the transition. Relative offsets, undo/redo, project persistence and export are retained.
+Striped timeline regions mark overlaps. Incoming video alpha replaces the outgoing
+picture; explicit black/audio fades at the same inner edges are overridden. Those
+video fade handles are disabled until the overlap is removed. Cross-track stacking
+is unchanged; overlap blending is for adjacent clips on the same track.
+
+Nested clips, identical start/end boundaries and three-way overlaps are not supported;
+moves/trims clamp to retain a valid two-way edit. Splitting within/on an overlap
+boundary is disabled: move the playhead outside the overlap first.
+
+All newly moved clips stop at zero, including linked groups. On opening older projects
+with negative audio pre-roll, the whole timeline and saved playhead shift right by
+the same amount, preserving all source content and relative sync. The timeline extent
+now grows during moves to include the last clip; zoom remains under your control and
+Fit shows the full edit. Use Save As to keep the original older-project file.

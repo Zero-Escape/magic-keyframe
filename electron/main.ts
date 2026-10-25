@@ -62,15 +62,42 @@ async function acquireSlot(kind: 'video' | 'audio') {
   return () => { const next = pool.waiting.shift(); if (next) next(); else pool.active-- }
 }
 const proxyJobs = new Map<string, Promise<{ path: string; url: string }>>()
+type ProxyTask = { canceled: boolean; child?: ReturnType<typeof spawn> }
+const proxyTasks = new Map<string, ProxyTask>()
+function proxyProgress(filePath: string, status: 'queued' | 'running' | 'ready' | 'error' | 'canceled', percent: number, etaSeconds?: number) {
+  mainWindow?.webContents.send('media:proxy-progress', { path: filePath, status, percent, etaSeconds })
+}
+async function runProxyProcess(filePath: string, args: string[], duration: number, task: ProxyTask) {
+  if (task.canceled) throw new Error('Proxy canceled')
+  const started = Date.now()
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(unpackedPath(packagedFfmpegPath!), ['-progress', 'pipe:1', '-nostats', ...args], { windowsHide: true }); task.child = child
+    let text = '', errors = ''
+    proxyProgress(filePath, 'running', 0)
+    child.stdout.on('data', (chunk: Buffer) => {
+      text += chunk.toString(); const lines = text.split(/\r?\n/); text = lines.pop() || ''
+      for (const line of lines) if (line.startsWith('out_time_us=')) {
+        const seconds = Number(line.slice(12)) / 1e6
+        if (!Number.isFinite(seconds)) continue
+        const ratio = duration > 0 ? Math.max(0, Math.min(.99, seconds / duration)) : 0
+        proxyProgress(filePath, 'running', ratio * 100, ratio > .01 ? (Date.now() - started) / 1000 * (1 - ratio) / ratio : undefined)
+      }
+    })
+    child.stderr.on('data', (chunk: Buffer) => { errors = (errors + chunk.toString()).slice(-16000) })
+    child.on('error', reject)
+    child.on('close', (code) => { task.child = undefined; task.canceled ? reject(new Error('Proxy canceled')) : code === 0 ? resolve() : reject(new Error(errors || `Proxy encoder exited ${code}`)) })
+  })
+}
 function generateProxy(filePath: string) {
   let pending = proxyJobs.get(filePath)
   if (!pending) {
-    pending = buildProxy(filePath).finally(() => proxyJobs.delete(filePath))
+    const task: ProxyTask = { canceled: false }; proxyTasks.set(filePath, task); proxyProgress(filePath, 'queued', 0)
+    pending = buildProxy(filePath, task).catch((error) => { proxyProgress(filePath, task.canceled ? 'canceled' : 'error', 0); throw error }).finally(() => { proxyJobs.delete(filePath); proxyTasks.delete(filePath) })
     proxyJobs.set(filePath, pending)
   }
   return pending
 }
-async function buildProxy(filePath: string) {
+async function buildProxy(filePath: string, task: ProxyTask) {
   if (!packagedFfmpegPath) throw new Error('FFmpeg is unavailable')
   const proxyFolder = path.join(app.getPath('userData'), 'proxies')
   await mkdir(proxyFolder, { recursive: true })
@@ -78,19 +105,20 @@ async function buildProxy(filePath: string) {
   const key = createHash('sha1').update(filePath).update(String(source.size)).update(String(source.mtimeMs)).digest('hex').slice(0, 16)
   const outputPath = path.join(proxyFolder, `${key}-preview720p-v2.mp4`)
   if (!await fileExists(outputPath)) {
-    const release = await acquireSlot('video')
+    const duration = (await inspectMedia(filePath)).duration, release = await acquireSlot('video')
     const pendingPath = path.join(proxyFolder, `${key}-${process.pid}-${Date.now()}.mp4`)
     const input = ['-y', '-v', 'error', '-i', filePath, '-map', '0:v:0', '-an', '-vf', 'scale=-2:720,format=yuv420p']
     const output = ['-pix_fmt', 'yuv420p', '-g', '15', '-bf', '0', '-movflags', '+faststart', pendingPath]
     try {
-      try { await runProcess(unpackedPath(packagedFfmpegPath), [...input, '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '25', ...output]) }
-      catch { await runProcess(unpackedPath(packagedFfmpegPath), [...input, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', ...output]) }
+      if (task.canceled) throw new Error('Proxy canceled')
+      try { await runProxyProcess(filePath, [...input, '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '25', ...output], duration, task) }
+      catch (error) { if (task.canceled) throw error; await runProxyProcess(filePath, [...input, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', ...output], duration, task) }
+      if (task.canceled) throw new Error('Proxy canceled')
       await rename(pendingPath, outputPath)
-    } catch (error) {
-      await unlink(pendingPath).catch(() => {})
-      throw error
-    } finally { release() }
+    } catch (error) { await unlink(pendingPath).catch(() => {}); throw error } finally { release() }
   }
+  if (task.canceled) throw new Error('Proxy canceled')
+  proxyProgress(filePath, 'ready', 100)
   return { path: outputPath, url: pathToFileURL(outputPath).toString() }
 }
 
@@ -311,6 +339,10 @@ ipcMain.handle('media:choose', async () => {
 })
 
 ipcMain.handle('media:proxy', (_event, filePath: string) => generateProxy(filePath))
+ipcMain.handle('media:cancel-proxies', async () => {
+  for (const task of proxyTasks.values()) { task.canceled = true; task.child?.kill() }
+  await Promise.allSettled([...proxyJobs.values()])
+})
 ipcMain.handle('media:export', (_event, request: ExportRequest) => exportVideo(request))
 
 ipcMain.on('project:dirty', (_event, dirty: boolean) => { projectDirty = Boolean(dirty) })
@@ -386,6 +418,8 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
+
+app.on('before-quit', () => { for (const task of proxyTasks.values()) { task.canceled = true; task.child?.kill() } })
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

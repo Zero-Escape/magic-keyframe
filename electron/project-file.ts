@@ -1,10 +1,10 @@
 import path from 'node:path'
-import { ordered, emptyEdit, type Segment, type TimelineEdit } from './timeline.js'
+import { ordered, emptyEdit, validLane, type Segment, type TimelineEdit } from './timeline.js'
 import { effectLimits } from './effects.js'
 import { randomUUID } from 'node:crypto'
 import { readFile, open, rename, unlink, stat } from 'node:fs/promises'
 export type Project = {
-  format: 'magic-keyframe-project'; version: 3
+  format: 'magic-keyframe-project'; version: 4
   media: { id: string; kind: 'video' | 'audio'; path: string; absolutePath?: string }[]
   edit: TimelineEdit
   view: { position: number; zoom: number; timelineHeight: number; sidebarWidth: number }
@@ -12,7 +12,7 @@ export type Project = {
 const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n)
 export function validateProject(value: unknown): Project {
   const p = structuredClone(value) as Project
-  if (!p || p.format !== 'magic-keyframe-project' || ![1, 2, 3].includes(p.version)) throw new Error('Not a supported Magic Keyframe project (versions 1–3).')
+  if (!p || p.format !== 'magic-keyframe-project' || ![1, 2, 3, 4].includes(p.version)) throw new Error('Not a supported Magic Keyframe project (versions 1–4).')
   if (!Array.isArray(p.media) || p.media.length > 200 || !p.edit || !p.view) throw new Error('Invalid project structure.')
   if (Number(p.version) < 3) {
     const legacy = p as unknown as { tracks: { videoMuted: boolean; audioMuted: boolean; videoHidden: boolean }; edit: TimelineEdit & { audioOffset?: number } }
@@ -26,8 +26,16 @@ export function validateProject(value: unknown): Project {
       const source = p.media.find((m) => m.kind === track)
       p.edit[track] = p.edit[track].map((c) => ({ ...c, mediaId: source?.id || '', lane: 0, at: Number(p.version) === 1 ? c.start + (track === 'audio' ? offset! : 0) : c.at }))
     }
-    p.edit = { video: p.edit.video, audio: p.edit.audio, lanes }; p.version = 3
+    p.edit = { video: p.edit.video, audio: p.edit.audio, lanes }; p.version = 4
   }
+  // Earlier builds permitted audio pre-roll before zero. Shift the whole edit,
+  // including the saved playhead, to preserve sync and keep every clip visible.
+  const earliest = Math.min(0, ...[...p.edit.video, ...p.edit.audio].map((c) => c.at))
+  if (finite(earliest) && earliest < 0) {
+    for (const c of [...p.edit.video, ...p.edit.audio]) c.at -= earliest
+    p.view.position -= earliest
+  }
+  p.version = 4
   const ids = new Map<string, 'video' | 'audio'>()
   for (const m of p.media) {
     if (!m || typeof m.id !== 'string' || !m.id || ids.has(m.id) || !['video', 'audio'].includes(m.kind) || typeof m.path !== 'string' || !m.path || (m.absolutePath !== undefined && typeof m.absolutePath !== 'string')) throw new Error('Invalid project media.')
@@ -39,7 +47,7 @@ export function validateProject(value: unknown): Project {
     if (!Array.isArray(clips) || clips.length > 10000 || !Array.isArray(lanes) || !lanes.length || lanes.length > 16) throw new Error('Invalid project tracks.')
     for (const lane of lanes) if (!lane || typeof lane.name !== 'string' || !lane.name || lane.name.length > 100 || typeof lane.muted !== 'boolean' || typeof lane.hidden !== 'boolean') throw new Error('Invalid track settings.')
     for (const c of clips) {
-      if (!c || typeof c.id !== 'string' || !c.id || clipIds.has(c.id) || ids.get(c.mediaId) !== track || !Number.isInteger(c.lane) || c.lane < 0 || c.lane >= lanes.length || !finite(c.start) || !finite(c.end) || c.start < 0 || c.end <= c.start || !finite(c.at) || (track === 'video' && c.at < -1e-7) || (c.linkId !== undefined && (typeof c.linkId !== 'string' || !c.linkId || c.linkId.length > 200))) throw new Error('Invalid project clip.')
+      if (!c || typeof c.id !== 'string' || !c.id || clipIds.has(c.id) || ids.get(c.mediaId) !== track || !Number.isInteger(c.lane) || c.lane < 0 || c.lane >= lanes.length || !finite(c.start) || !finite(c.end) || c.start < 0 || c.end <= c.start || !finite(c.at) || c.at < -1e-7 || (c.linkId !== undefined && (typeof c.linkId !== 'string' || !c.linkId || c.linkId.length > 200))) throw new Error('Invalid project clip.')
       if (c.effects) for (const [key, val] of Object.entries(c.effects)) {
         const limit = effectLimits[key as keyof typeof effectLimits]
         if (!limit || !finite(val) || val < limit[0] || val > limit[1]) throw new Error('Invalid clip effect.')
@@ -48,7 +56,7 @@ export function validateProject(value: unknown): Project {
     }
     for (let lane = 0; lane < lanes.length; lane++) {
       const placed = ordered(clips.filter((c) => c.lane === lane))
-      if (placed.some((c, i) => i > 0 && c.at < placed[i - 1].at + placed[i - 1].end - placed[i - 1].start - 1e-7)) throw new Error('Clips overlap on the same track.')
+      if (!validLane(placed)) throw new Error('Unsupported track overlap: use two-way edge overlaps, not nested clips or three clips at once.')
     }
   }
   for (const key of ['position', 'zoom', 'timelineHeight', 'sidebarWidth'] as const) if (!finite(p.view[key])) throw new Error('Invalid project view.')

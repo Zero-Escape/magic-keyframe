@@ -21,6 +21,12 @@ contextBridge.exposeInMainWorld('magicKey', {
   chooseMedia: () => ipcRenderer.invoke('media:choose'),
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   importMedia: (paths: string[]) => ipcRenderer.invoke('media:import', paths),
+  cancelProxies: () => ipcRenderer.invoke('media:cancel-proxies'),
+  onProxyProgress: (callback: (progress: unknown) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: unknown) => callback(progress)
+    ipcRenderer.on('media:proxy-progress', handler)
+    return () => ipcRenderer.removeListener('media:proxy-progress', handler)
+  },
   generateProxy: (filePath: string) => ipcRenderer.invoke('media:proxy', filePath),
   exportVideo: (request: unknown) => ipcRenderer.invoke('media:export', request),
 })

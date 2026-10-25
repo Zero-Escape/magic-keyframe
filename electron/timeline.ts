@@ -36,33 +36,47 @@ export function removeClips(edit: TimelineEdit, ids: string[]) {
   const selected = new Set(linkedSelection(edit, ids))
   return pruneLinks({ ...edit, video: edit.video.filter((c) => !selected.has(c.id)), audio: edit.audio.filter((c) => !selected.has(c.id)) })
 }
-// Clamp one shared delta for the whole selection: no overlaps, lost relative sync,
-// negative video placement, or destructive overwrites. Audio can have pre-roll.
+// Overlaps are edge-to-edge transitions, not nested clips or triple overlaps.
+export function validLane(clips: Segment[]) {
+  const sorted = ordered(clips)
+  return sorted.every((c, i) => c.at >= -1e-7 && (!i || c.at > sorted[i - 1].at + 1e-7 && endAt(c) > endAt(sorted[i - 1]) + 1e-7) && (i < 2 || c.at >= endAt(sorted[i - 2]) - 1e-7))
+}
+export function transitionEdges(clips: Segment[], clip: Segment) {
+  const lane = ordered(clips.filter((c) => c.lane === clip.lane)), index = lane.findIndex((c) => c.id === clip.id)
+  return { incoming: index > 0 ? Math.max(0, endAt(lane[index - 1]) - clip.at) : 0, outgoing: index >= 0 && index < lane.length - 1 ? Math.max(0, endAt(clip) - lane[index + 1].at) : 0 }
+}
+export function transitionGain(clips: Segment[], clip: Segment, time: number) {
+  const { incoming, outgoing } = transitionEdges(clips, clip), local = time - clip.at
+  return Math.sin(Math.PI / 2 * Math.max(0, Math.min(1, incoming ? local / incoming : 1))) * Math.sin(Math.PI / 2 * Math.max(0, Math.min(1, outgoing ? (endAt(clip) - time) / outgoing : 1)))
+}
 export function moveClips(edit: TimelineEdit, ids: string[], requested: number, snapDistance = 0, playhead?: number) {
-  const selected = new Set(linkedSelection(edit, ids))
-  if (!selected.size || !Number.isFinite(requested)) return { edit, delta: 0 }
-  let min = -Infinity, max = Infinity
-  for (const track of tracks) for (const c of edit[track].filter((c) => selected.has(c.id))) {
-    if (track === 'video') min = Math.max(min, -c.at)
-    for (const other of edit[track].filter((other) => !selected.has(other.id) && other.lane === c.lane)) {
-      if (endAt(other) <= c.at + 1e-7) min = Math.max(min, endAt(other) - c.at)
-      else if (other.at >= endAt(c) - 1e-7) max = Math.min(max, other.at - endAt(c))
-    }
-  }
-  let delta = Math.max(min, Math.min(max, requested))
+  const selected = new Set(linkedSelection(edit, ids)), moving = all(edit).filter((c) => selected.has(c.id))
+  if (!moving.length || !Number.isFinite(requested)) return { edit, delta: 0 }
+  const min = -Math.min(...moving.map((c) => c.at))
+  let delta = Math.max(min, requested)
   const targets = [0, ...(playhead === undefined ? [] : [playhead]), ...all(edit).filter((c) => !selected.has(c.id)).flatMap((c) => [c.at, endAt(c)])]
   let nearest = snapDistance
-  for (const c of all(edit).filter((c) => selected.has(c.id))) for (const edge of [c.at, endAt(c)]) for (const target of targets) {
-    const candidate = target - edge, distance = Math.abs(candidate - requested)
-    if (candidate >= min - 1e-7 && candidate <= max + 1e-7 && distance < nearest) { nearest = distance; delta = Math.max(min, Math.min(max, candidate)) }
+  for (const c of moving) for (const edge of [c.at, endAt(c)]) for (const target of targets) {
+    const distance = Math.abs(target - edge - requested)
+    if (target - edge >= min && distance < nearest) { nearest = distance; delta = target - edge }
+  }
+  const shifted = (value: number) => map(edit, (c) => selected.has(c.id) ? { ...c, at: Math.max(0, c.at + value) } : c)
+  const valid = (next: TimelineEdit) => tracks.every((track) => next.lanes[track].every((_, lane) => validLane(next[track].filter((c) => c.lane === lane))))
+  // Preserve ordering and clamp before a clip would swallow another, or a third
+  // simultaneous clip would make the intended two-way transition ambiguous.
+  if (!valid(shifted(delta))) {
+    let low = 0, high = 1
+    for (let i = 0; i < 28; i++) { const fraction = (low + high) / 2; if (valid(shifted(delta * fraction))) low = fraction; else high = fraction }
+    delta *= low
   }
   if (Math.abs(delta) < 1e-9) return { edit, delta: 0 }
-  return { edit: map(edit, (c) => selected.has(c.id) ? { ...c, at: c.at + delta } : c), delta }
+  return { edit: shifted(delta), delta }
 }
 export function splitClips(edit: TimelineEdit, ids: string[], time: number, minimum: number, createId = () => crypto.randomUUID()) {
   const selected = new Set(linkedSelection(edit, ids))
   const splittable = all(edit).filter((c) => selected.has(c.id) && time > c.at + 1e-7 && time < endAt(c) - 1e-7)
   if (!splittable.some((c) => time > c.at + minimum && time < endAt(c) - minimum)) return { edit, selection: ids }
+  if (tracks.some((track) => edit[track].some((c) => selected.has(c.id) && time > c.at && time < endAt(c) && edit[track].some((other) => other.id !== c.id && other.lane === c.lane && time >= other.at - 1e-7 && time <= endAt(other) + 1e-7)))) return { edit, selection: ids }
   const splitIds = new Set(splittable.map((c) => c.id))
   const links = new Map<string, { left: string; right: string }>()
   for (const c of splittable) if (c.linkId && !links.has(c.linkId)) links.set(c.linkId, { left: createId(), right: createId() })
@@ -83,19 +97,22 @@ export function splitClips(edit: TimelineEdit, ids: string[], time: number, mini
     return [c]
   })
   const result = pruneLinks({ ...edit, video: splitTrack(edit.video), audio: splitTrack(edit.audio) })
+  if (tracks.some((track) => result.lanes[track].some((_, lane) => !validLane(result[track].filter((c) => c.lane === lane))))) return { edit, selection: ids }
   return { edit: result, selection: linkedSelection(result, selection) }
 }
 export function trimClip(edit: TimelineEdit, id: string, edge: 'start' | 'end', value: number, sourceDuration: number, minimum: number) {
-  return map(edit, (clip, track) => {
+  const next = map(edit, (clip, track) => {
     if (clip.id !== id || !Number.isFinite(value)) return clip
     const clips = ordered(edit[track].filter((c) => c.lane === clip.lane)), index = clips.findIndex((c) => c.id === id)
     if (edge === 'start') {
-      const earliest = Math.max(0, index ? clip.start + endAt(clips[index - 1]) - clip.at : track === 'video' ? clip.start - clip.at : 0)
-      const start = Math.max(earliest, Math.min(clip.end - minimum, value))
+      const earliest = Math.max(0, clip.start - clip.at, index ? clip.start + clips[index - 1].at + minimum - clip.at : 0, index > 1 ? clip.start + endAt(clips[index - 2]) - clip.at : 0)
+      const start = Math.max(earliest, Math.min(clip.end - minimum, index < clips.length - 1 ? clip.start + clips[index + 1].at - clip.at - minimum : Infinity, value))
       return Math.abs(start - clip.start) < 1e-9 ? clip : { ...clip, start, at: clip.at + start - clip.start }
     }
-    const latest = Math.min(sourceDuration, index < clips.length - 1 ? clip.start + clips[index + 1].at - clip.at : sourceDuration)
-    const end = Math.max(clip.start + minimum, Math.min(latest, value))
+    const latest = Math.min(sourceDuration, index < clips.length - 1 ? clip.start + endAt(clips[index + 1]) - minimum - clip.at : sourceDuration, index < clips.length - 2 ? clip.start + clips[index + 2].at - clip.at : sourceDuration)
+    const end = Math.max(clip.start + minimum, index ? clip.start + endAt(clips[index - 1]) - clip.at + minimum : 0, Math.min(latest, value))
     return Math.abs(end - clip.end) < 1e-9 ? clip : { ...clip, end }
   })
+  if (all(next).some((c) => c.id === id && (c.start < 0 || c.end > sourceDuration || c.end <= c.start)) || tracks.some((track) => next.lanes[track].some((_, lane) => !validLane(next[track].filter((c) => c.lane === lane))))) return edit
+  return next
 }

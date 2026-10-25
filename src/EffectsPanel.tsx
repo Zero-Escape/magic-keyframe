@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { effects, defaultEffects, effectLimits, type ClipEffects } from '../electron/effects'
-import type { Segment, TimelineEdit, Track } from '../electron/timeline'
+import { transitionEdges, type Segment, type TimelineEdit, type Track } from '../electron/timeline'
 import type { MediaItem } from './editor-types'
 import type { SyncResult } from '../electron/sync-types'
 export type SyncCandidate = SyncResult & { referenceId: string; targetId: string; at: number; fingerprint: string }
@@ -22,6 +22,7 @@ const rowSpecs: { key: keyof ClipEffects; label: string; step: number; unit?: st
 ]
 export function EffectsPanel(props: Props) {
   const { clip, kind, media, edit } = props, item = clip && media.find((m) => m.id === clip.mediaId)
+  const blend = clip ? transitionEdges(edit[kind], clip) : { incoming: 0, outgoing: 0 }
   const [draft, setDraft] = useState<ClipEffects>(effects(clip?.effects)), [bypass, setBypass] = useState(false), [applying, setApplying] = useState(false)
   const [allSelected, setAllSelected] = useState(false)
   const [reference, setReference] = useState(''), [target, setTarget] = useState(''), [link, setLink] = useState(true)
@@ -41,7 +42,7 @@ export function EffectsPanel(props: Props) {
     return <label className="effect-row" key={key}><span>{spec.label}<output>{draft[key].toFixed(spec.step >= 1 ? 0 : spec.step >= .1 ? 1 : 2)}{spec.unit}</output></span><input type="range" aria-label={spec.label} min={min} max={max} step={spec.step} value={draft[key]} onChange={(e) => update(key, Number(e.target.value))} /></label>
   }
   return <div className="effects-panel">
-    <h2>Effects</h2><p className="muted-copy">Applies to the active clip, not all linked partners.</p>
+    <h2>Effects</h2><p className="muted-copy">Applies to the active clip, not all linked partners.</p>{(blend.incoming > 0 || blend.outgoing > 0) && <p className="muted-copy">Automatic overlap transition: {blend.incoming > 0 ? `in ${blend.incoming.toFixed(2)}s ` : ''}{blend.outgoing > 0 ? `out ${blend.outgoing.toFixed(2)}s` : ''}. This replaces black/audio fades at the shared edges. Drag clips apart to remove it.</p>}
     {clip && item ? <>
       <div className="inspector-source"><strong>{item.name}</strong><small>{kind === 'video' ? 'Video' : 'Audio'} · source {clip.start.toFixed(2)}–{clip.end.toFixed(2)}s</small></div>
       <label className="effect-row">Timeline track<select value={clip.lane} onChange={(event) => props.onLane(clip, Number(event.target.value))}>{edit.lanes[kind].map((lane, index) => <option key={index} value={index}>{lane.name}</option>)}</select></label>
