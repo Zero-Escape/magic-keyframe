@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { AudioLines, Download, Eye, EyeOff, FilePlus2, FolderOpen, KeyRound, Link2, Pause, Play, Plus, Redo2, Save, Scissors, SkipBack, SkipForward, Trash2, Undo2, Unlink2, Video, Volume2, VolumeX, WandSparkles } from 'lucide-react'
-import { activeClip, emptyEdit, endAt, linkedSelection, linkClips, moveClips, ordered, removeClips, splitClips, timelineEnd, transitionEdges, trimClip, unlinkClips, type Segment, type TimelineEdit, type Track } from '../electron/timeline'
+import { activeClip, emptyEdit, endAt, linkedSelection, linkClips, moveClips, ordered, removeClips, splitClips, timelineEnd, transitionEdges, trimLinkedClips, unlinkClips, type Segment, type TimelineEdit, type Track } from '../electron/timeline'
 import { effects, defaultEffects, effectLimits, type ClipEffects } from '../electron/effects'
 import type { MediaItem, Snapshot } from './editor-types'
 import { Preview, AudioMixer, Meter } from './Preview'
@@ -43,7 +43,7 @@ export default function App() {
   const positionRef = useRef(0), playClock = useRef({ time: 0, now: 0 }), playbackEnd = useRef(0)
   const tracksRef = useRef<HTMLDivElement>(null), viewportRef = useRef<HTMLDivElement>(null), dragDepth = useRef(0), scrubbing = useRef(false)
   const clipDrag = useRef<{ x: number; scroll: number; base: Snapshot; ids: string[]; moved: boolean; scale: number; collapse?: string[] } | null>(null)
-  const trimDrag = useRef<{ kind: Track; id: string; edge: 'start' | 'end'; moved: boolean } | null>(null)
+  const trimDrag = useRef<{ kind: Track; id: string; edge: 'start' | 'end'; x: number; scroll: number; scale: number; base: Snapshot; moved: boolean; limited: boolean } | null>(null)
   const fadeDrag = useRef<{ id: string; kind: Track; edge: 'fadeIn' | 'fadeOut' | 'audioFadeIn' | 'audioFadeOut'; x: number; scroll: number; scale: number; initial: number; max: number; base: Snapshot; moved: boolean } | null>(null)
   const [activeFade, setActiveFade] = useState<string | null>(null)
   const resizing = useRef<{ kind: 'sidebar' | 'timeline'; initial: number; x: number; y: number } | null>(null)
@@ -54,9 +54,11 @@ export default function App() {
   const selected = selectedClips.find((c) => c.id === focusId) || selectedClips[0]
   const selectedKind: Track = selected && edit.audio.some((c) => c.id === selected.id) ? 'audio' : 'video'
   const selectedMedia = selected && media.find((m) => m.id === selected.mediaId)
+  const sourceDurations = useMemo(() => Object.fromEntries(media.map((m) => [m.id, m.metadata.duration])), [media])
   const fps = media.find((m) => m.kind === 'video' && edit.video.some((c) => c.mediaId === m.id))?.metadata.video?.fps || 29.97, frame = 1 / fps
   const splitInsideBlend = selectedClips.some((c) => (edit.video.includes(c) ? edit.video : edit.audio).some((other) => other.id !== c.id && other.lane === c.lane && position > c.at && position < endAt(c) && position >= other.at - 1e-7 && position <= endAt(other) + 1e-7))
-  const canSplit = !splitInsideBlend && selectedClips.some((c) => position > c.at + frame / 2 && position < endAt(c) - frame / 2)
+  const crossingSplit = selectedClips.filter((c) => position > c.at + 1e-7 && position < endAt(c) - 1e-7)
+  const canSplit = !splitInsideBlend && crossingSplit.length > 0 && crossingSplit.every((c) => position > c.at + frame / 2 && position < endAt(c) - frame / 2)
   const canUnlink = selectedClips.some((c) => c.linkId), canLink = selectedClips.length > 1 && (!selectedClips[0].linkId || selectedClips.some((c) => c.linkId !== selectedClips[0].linkId))
   const title = projectPath?.split(/[\\/]/).pop()?.replace(/\.mkproj$/i, '') || 'Untitled Wedding'
   const rows = [...edit.lanes.video.map((lane, index) => ({ kind: 'video' as Track, lane, index })).reverse(), ...edit.lanes.audio.map((lane, index) => ({ kind: 'audio' as Track, lane, index }))]
@@ -73,7 +75,7 @@ export default function App() {
   const undo = () => { if (!undoStack.length) return; setRedoStack((s) => [...s, state]); restore(undoStack.at(-1)!); setUndoStack((s) => s.slice(0, -1)) }
   const redo = () => { if (!redoStack.length) return; setUndoStack((s) => [...s, state]); restore(redoStack.at(-1)!); setRedoStack((s) => s.slice(0, -1)) }
   const draftChanged = useCallback((value?: { id: string; value: ClipEffects }) => setDraft(value), [])
-  const project = (): ProjectData => ({ format: 'magic-keyframe-project', version: 5, media: media.map(({ id, kind, path }) => ({ id, kind, path })), edit, view: { position: positionRef.current, zoom, timelineHeight, sidebarWidth } })
+  const project = (): ProjectData => ({ format: 'magic-keyframe-project', version: 6, media: media.map(({ id, kind, path }) => ({ id, kind, path })), edit, view: { position: positionRef.current, zoom, timelineHeight, sidebarWidth } })
   const projectRef = useRef(project()); projectRef.current = project()
 
   useEffect(() => { document.title = `${dirty ? '● ' : ''}${title} — Magic Keyframe`; window.magicKey?.setProjectDirty(dirty) }, [dirty, title])
@@ -165,7 +167,7 @@ export default function App() {
     return false
   }
   const changeLinks = (unlink: boolean) => { if (unlink ? canUnlink : canLink) commitEdit(unlink ? unlinkClips(edit, selection) : linkClips(edit, selection), false) }
-  const split = () => { if (splitInsideBlend) { fail('Move the playhead outside the overlap before splitting a crossfade.'); return }; const result = splitClips(edit, selection, Math.round(position * fps) / fps, frame / 2); if (result.edit !== edit) { commitEdit(result.edit); setSelection(result.selection); setFocusId(result.selection[0] || '') } }
+  const split = () => { if (splitInsideBlend) { fail('Move the playhead outside the overlap before splitting a crossfade.'); return }; const result = splitClips(edit, selection, Math.round(position * fps) / fps, frame / 2); if (result.edit !== edit) { commitEdit(result.edit); setSelection(result.selection); setFocusId(result.selection[0] || '') } else if (selection.length) { fail('Split needs enough material on both sides for every linked clip crossing the playhead. Move the playhead inward or unlink to edit independently.') } }
   const remove = () => { if (selection.length) { commitEdit(removeClips(edit, selection)); setSelection([]) } }
   const nudge = (delta: number) => { const result = moveClips(edit, selection, delta); if (result.delta) commitEdit(result.edit); else if (selection.length) setNotice({ kind: 'success', message: 'Clip move blocked by the timeline start or a neighbouring clip. Unlink or select the adjacent clips to move them together.' }) }
   const stepFrame = (direction: number) => { stop(); seek((Math.round(positionRef.current * fps) + direction) / fps) }
@@ -332,18 +334,34 @@ export default function App() {
     setState({ media: drag.base.media, edit: result.edit })
   }
   const endClip = () => { const drag = clipDrag.current; if (drag && !drag.moved && drag.collapse) setSelection(drag.collapse); clipDrag.current = null; setDragDuration(null) }
-  const beginTrim = (event: React.PointerEvent, kind: Track, clip: Segment, edge: 'start' | 'end') => { event.preventDefault(); event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); setSelection(linkedSelection(edit, [clip.id])); setFocusId(clip.id); setActiveLane({ kind, lane: clip.lane }); trimDrag.current = { kind, id: clip.id, edge, moved: false } }
+  const beginTrim = (event: React.PointerEvent, kind: Track, clip: Segment, edge: 'start' | 'end') => {
+    if (event.button !== 0 || operation.current) return
+    event.preventDefault(); event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId)
+    setSelection(linkedSelection(edit, [clip.id])); setFocusId(clip.id); setActiveLane({ kind, lane: clip.lane }); setDragDuration(timelineDuration)
+    trimDrag.current = { kind, id: clip.id, edge, x: event.clientX, scroll: viewportRef.current?.scrollLeft || 0, scale: timelineDuration / tracksRef.current!.clientWidth, base: state, moved: false, limited: false }
+  }
   const moveTrim = (event: React.PointerEvent) => {
     event.stopPropagation(); const drag = trimDrag.current; if (!drag) return
-    const clip = edit[drag.kind].find((c) => c.id === drag.id), item = clip && media.find((m) => m.id === clip.mediaId); if (!clip || !item) return
-    const value = clip.start + Math.round((timelinePoint(event.clientX) - clip.at) * fps) / fps, next = trimClip(edit, clip.id, drag.edge, value, item.metadata.duration, frame)
-    if (JSON.stringify(next) === JSON.stringify(edit)) return
-    if (!drag.moved) { stop(); record(); drag.moved = true }; setState({ media, edit: next })
+    const clip = drag.base.edit[drag.kind].find((c) => c.id === drag.id); if (!clip) return
+    const pixels = event.clientX - drag.x + (viewportRef.current?.scrollLeft || 0) - drag.scroll
+    if (!drag.moved && Math.abs(pixels) < 3) return
+    const value = clip[drag.edge] + Math.round(pixels * drag.scale * fps) / fps
+    const result = trimLinkedClips(drag.base.edit, clip.id, drag.edge, value, sourceDurations, frame)
+    drag.limited = result.limited
+    if (!drag.moved && !result.delta) return
+    if (!drag.moved) { stop(); record(drag.base); drag.moved = true }
+    setState({ media: drag.base.media, edit: result.edit })
   }
+  const trimLimitNotice = () => setNotice({ kind: 'success', message: 'Trim stopped at a source edge, minimum clip length, timeline start or neighbouring transition. Linked clips stop together to preserve sync; unlink to edit one independently.' })
+  const endTrim = () => { if (trimDrag.current?.limited) trimLimitNotice(); trimDrag.current = null; setDragDuration(null) }
   const trimInput = (edge: 'start' | 'end') => {
     if (!selected || !selectedMedia) return
     const value = Number(trimDraft[edge]); if (!Number.isFinite(value)) return
-    commitEdit(trimClip(edit, selected.id, edge, Math.round(value * fps) / fps, selectedMedia.metadata.duration, frame))
+    const result = trimLinkedClips(edit, selected.id, edge, Math.round(value * fps) / fps, sourceDurations, frame)
+    commitEdit(result.edit); if (result.limited) trimLimitNotice()
+    // A clamped/no-op edit still needs its field restored to the accepted value.
+    const accepted = [...result.edit.video, ...result.edit.audio].find((c) => c.id === selected.id)!
+    setTrimDraft({ start: accepted.start.toFixed(3), end: accepted.end.toFixed(3) })
   }
   const beginFade = (event: React.PointerEvent, clip: Segment, edge: 'fadeIn' | 'fadeOut' | 'audioFadeIn' | 'audioFadeOut') => {
     if (event.button !== 0) return
@@ -387,7 +405,7 @@ export default function App() {
     const item = media.find((m) => m.id === clip.mediaId); if (!item) return null
     const e = effects(clip.effects), d = clip.end - clip.start, blend = transitionEdges(edit[kind], clip)
     return <div key={clip.id} data-segment-id={clip.id} className={`clip ${kind}-clip draggable ${selection.includes(clip.id) ? 'selected' : ''} ${clip.linkId ? 'linked-clip' : ''}`} style={{ left: `${clip.at / timelineDuration * 100}%`, width: `${d / timelineDuration * 100}%` }} onPointerDown={(event) => beginClip(event, kind, clip)} onPointerMove={moveClip} onPointerUp={endClip} onPointerCancel={endClip}>
-      <span className="trim-handle left" title="Trim source start" onPointerDown={(event) => beginTrim(event, kind, clip, 'start')} onPointerMove={moveTrim} onPointerUp={() => { trimDrag.current = null }} onPointerCancel={() => { trimDrag.current = null }} />
+      <span className="trim-handle left" title="Trim start (linked partners trim together)" onPointerDown={(event) => beginTrim(event, kind, clip, 'start')} onPointerMove={moveTrim} onPointerUp={endTrim} onPointerCancel={endTrim} onLostPointerCapture={endTrim} />
       <Waveform data={item.waveform} start={clip.start} end={clip.end} left={clip.at / timelineDuration * viewport.width * zoom / 100} width={d / timelineDuration * viewport.width * zoom / 100} viewport={viewport.width} scroll={viewport.scroll} />
       <div className="clip-title"><strong>{clip.linkId && <Link2 size={11} />}{item.name}</strong><small>{clock(clip.start)} → {clock(clip.end)} {Object.entries(e).some(([key, val]) => val !== defaultEffects[key as keyof ClipEffects]) && ' · FX'}</small></div>
       {(['in', 'out'] as const).map((side) => {
@@ -405,7 +423,7 @@ export default function App() {
           <span className="fade-triangle" />{active && <span className="fade-duration">{value.toFixed(2)}s</span>}
         </button>
       })}
-      <span className="trim-handle right" title="Trim source end" onPointerDown={(event) => beginTrim(event, kind, clip, 'end')} onPointerMove={moveTrim} onPointerUp={() => { trimDrag.current = null }} onPointerCancel={() => { trimDrag.current = null }} />
+      <span className="trim-handle right" title="Trim end (linked partners trim together)" onPointerDown={(event) => beginTrim(event, kind, clip, 'end')} onPointerMove={moveTrim} onPointerUp={endTrim} onPointerCancel={endTrim} onLostPointerCapture={endTrim} />
     </div>
   }
   return <main className="app-shell studio-shell" style={{ '--timeline-height': `${timelineHeight}px`, '--sidebar-width': `${sidebarWidth}px` } as CSSProperties}
@@ -423,7 +441,7 @@ export default function App() {
     <section className="timeline-panel panel"><div className="timeline-resizer" onPointerDown={(e) => beginResize(e, 'timeline')} onPointerMove={moveResize} onPointerUp={() => { resizing.current = null }} onPointerCancel={() => { resizing.current = null }} /><div className="timeline-tools"><div className="tool-group"><span className="tool active">{selection.length} selected</span><button className="tool" disabled={!canSplit} onClick={split}><Scissors size={15} />Split</button><button className="tool" disabled={!selection.length} onClick={remove}><Trash2 size={15} />Remove</button><button className="tool" disabled={!canLink} onClick={() => changeLinks(false)}><Link2 size={15} />Link</button><button className="tool" disabled={!canUnlink} onClick={() => changeLinks(true)}><Unlink2 size={15} />Unlink</button></div><div className="edit-controls"><div className="align-controls"><button title="Step playhead back one frame (Left arrow)" disabled={!projectDuration} onClick={() => stepFrame(-1)}>−1 frame</button><button title="Step playhead forward one frame (Right arrow)" disabled={!projectDuration} onClick={() => stepFrame(1)}>+1 frame</button></div><div className="trim-inputs">{(['start', 'end'] as const).map((edge) => <label key={edge}>{edge === 'start' ? 'IN' : 'OUT'}<input type="number" step={frame} aria-label={`${edge} source seconds`} disabled={!selected} value={trimDraft[edge]} onChange={(e) => setTrimDraft((s) => ({ ...s, [edge]: e.target.value }))} onBlur={() => trimInput(edge)} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }} /></label>)}</div></div><div className="zoom"><button title="Add video track" onClick={() => addLane('video')}>+ V</button><button title="Add audio track" onClick={() => addLane('audio')}>+ A</button><button onClick={() => changeZoom(100)}>Fit</button><input aria-label="Timeline zoom" type="range" min="100" max="4000" step="50" value={zoom} onChange={(e) => changeZoom(Number(e.target.value))} /></div></div>
       <div className="timeline-scroll"><div className="timeline-content"><div className="track-labels"><div className="ruler-spacer" />{rows.map(({ kind, lane, index }) => <div key={`${kind}:${index}`} className={`track-header ${activeLane.kind === kind && activeLane.lane === index ? 'selected-track' : ''}`} onClick={() => selectLane(kind, index)}><button className="track-select">{kind === 'video' ? <Video size={13} /> : <AudioLines size={13} />}<span>{lane.name.toUpperCase()}</span></button><div className="lane-controls"><div className="track-switches"><button title={`${lane.muted ? 'Unmute' : 'Mute'} ${lane.name}`} aria-pressed={lane.muted} className={lane.muted ? 'switch-off' : ''} onClick={(e) => { e.stopPropagation(); setLaneFlag(kind, index, 'muted') }}>{lane.muted ? <VolumeX size={13} /> : <Volume2 size={13} />}</button>{kind === 'video' && <button title={`${lane.hidden ? 'Show' : 'Hide'} ${lane.name}`} aria-pressed={lane.hidden} onClick={(e) => { e.stopPropagation(); setLaneFlag(kind, index, 'hidden') }}>{lane.hidden ? <EyeOff size={13} /> : <Eye size={13} />}</button>}</div><Meter mixer={mixer} lane={`${kind}:${index}`} /></div></div>)}</div>
       <div className="track-viewport" ref={viewportRef} style={{ height: `${30 + rows.length * 86 + 14}px` }}><div className="tracks" ref={tracksRef} style={{ width: `${zoom}%`, minHeight: `${30 + rows.length * 86}px` }}><div className="ruler" onPointerDown={beginScrub} onPointerMove={moveScrub} onPointerUp={() => { scrubbing.current = false }} onPointerCancel={() => { scrubbing.current = false }}>{Array.from({ length: Math.min(200, Math.max(7, Math.round(7 * zoom / 100))) }, (_, i) => i).map((_, i, list) => <span key={i} style={{ left: `${i / (list.length - 1) * 100}%` }}>{clock(i / (list.length - 1) * timelineDuration)}<i /></span>)}</div><div className="playhead" style={{ left: `${Math.min(100, position / timelineDuration * 100)}%` }}><i /></div>{rows.map(({ kind, lane, index }) => <div key={`${kind}:${index}`} className={`track ${kind}-track ${lane.hidden ? 'track-disabled' : ''}`} onPointerDown={(event) => { setActiveLane({ kind, lane: index }); beginScrub(event) }} onPointerMove={moveScrub} onPointerUp={() => { scrubbing.current = false }} onPointerCancel={() => { scrubbing.current = false }}>{edit[kind].filter((c) => c.lane === index).map((c) => renderClip(kind, c))}</div>)}</div></div></div></div>
-      <div className="timeline-help">Ctrl/Shift+click: multi-select · Drag to overlap: crossfade · Arrows: step · Alt+arrows: move clips · Top triangles: fades · Link preserves sync · Effects: color, audio and sync · Wheel: zoom</div>
+      <div className="timeline-help">Ctrl/Shift+click: multi-select · Drag to overlap: crossfade · Arrows: step · Alt+arrows: move clips · Top triangles: fades · Linked edges trim together · Effects: color, audio and sync · Wheel: zoom</div>
     </section>
     {exportProject && <ExportDialog project={exportProject} sourceFps={fps} onClose={() => setExportProject(null)} onBusy={setExporting} onStart={async () => { stop(); await switchProxyMode(false) }} onComplete={(path) => setNotice({ kind: 'success', message: `Export saved: ${path}` })} />}
   </main>

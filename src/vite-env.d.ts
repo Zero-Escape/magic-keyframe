@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 interface WaveformData { bucketSeconds: number; channels: { min: number[]; max: number[] }[] }
 interface ProjectData {
-  format: 'magic-keyframe-project'; version: 5
+  format: 'magic-keyframe-project'; version: 6
   media: { id: string; kind: 'video' | 'audio'; path: string }[]
   edit: import('../electron/timeline').TimelineEdit
   view: { position: number; zoom: number; timelineHeight: number; sidebarWidth: number }

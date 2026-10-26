@@ -180,7 +180,7 @@ const audioTasks = new Map<string, ExportTask>()
 const audioJobs = new Map<string, Promise<{ url: string; path: string }>>()
 function validatedAudio(value?: Partial<ClipEffects>) {
   const e = effects(value)
-  for (const key of ['vocal', 'noise', 'compression', 'leveling', 'gainDb'] as const) {
+  for (const key of ['vocal', 'noise', 'hiss', 'compression', 'leveling', 'gainDb'] as const) {
     const [min, max] = effectLimits[key]
     if (!Number.isFinite(e[key]) || e[key] < min || e[key] > max) throw new Error('Invalid audio processing settings.')
   }

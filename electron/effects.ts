@@ -1,12 +1,12 @@
 export type ClipEffects = {
   gainDb: number; audioFadeIn: number; audioFadeOut: number
-  vocal: number; noise: number; compression: number; leveling: number
+  vocal: number; noise: number; hiss: number; compression: number; leveling: number
   exposure: number; contrast: number; saturation: number; temperature: number
   fadeIn: number; fadeOut: number
 }
-export const defaultEffects: ClipEffects = { gainDb: 0, audioFadeIn: 0, audioFadeOut: 0, vocal: 0, noise: 0, compression: 0, leveling: 0, exposure: 0, contrast: 1, saturation: 1, temperature: 0, fadeIn: 0, fadeOut: 0 }
+export const defaultEffects: ClipEffects = { gainDb: 0, audioFadeIn: 0, audioFadeOut: 0, vocal: 0, noise: 0, hiss: 0, compression: 0, leveling: 0, exposure: 0, contrast: 1, saturation: 1, temperature: 0, fadeIn: 0, fadeOut: 0 }
 export const effectLimits: Record<keyof ClipEffects, [number, number]> = {
-  gainDb: [-60, 18], audioFadeIn: [0, 30], audioFadeOut: [0, 30], vocal: [0, 1], noise: [0, 30], compression: [0, 1], leveling: [0, 1], exposure: [-3, 3], contrast: [.5, 2], saturation: [0, 2], temperature: [-1, 1], fadeIn: [0, 10], fadeOut: [0, 10],
+  gainDb: [-60, 18], audioFadeIn: [0, 30], audioFadeOut: [0, 30], vocal: [0, 1], noise: [0, 30], hiss: [0, 18], compression: [0, 1], leveling: [0, 1], exposure: [-3, 3], contrast: [.5, 2], saturation: [0, 2], temperature: [-1, 1], fadeIn: [0, 10], fadeOut: [0, 10],
 }
 export function effects(value?: Partial<ClipEffects>): ClipEffects { return { ...defaultEffects, ...value } }
 export function fadeFactor(time: number, duration: number, fadeIn: number, fadeOut: number) {
@@ -15,8 +15,12 @@ export function fadeFactor(time: number, duration: number, fadeIn: number, fadeO
 // Spectral denoising and conventional speech EQ/compression, not voice isolation.
 export function audioProcessing(e: ClipEffects) {
   const filters: string[] = []
-  if (e.noise > 0) filters.push(`afftdn=nr=${e.noise.toFixed(2)}:nf=-40:tn=1`)
+  if (e.hiss > 0) filters.push('aresample=48000') // Keep the 8 kHz shelf valid for low-rate sources too.
+  const reduction = Math.max(e.noise, e.hiss)
+  if (reduction > 0) filters.push(e.hiss > 0 ? `afftdn=nr=${reduction.toFixed(2)}:nf=${e.noise > 0 ? -40 : -50}:nt=w:tn=1:gs=6` : `afftdn=nr=${e.noise.toFixed(2)}:nf=-40:tn=1`)
   if (e.vocal > 0) filters.push(`highpass=f=80,equalizer=f=250:t=q:w=1:g=${(-2 * e.vocal).toFixed(3)},equalizer=f=3000:t=q:w=1:g=${(4 * e.vocal).toFixed(3)},acompressor=threshold=0.125:ratio=${(1 + 1.5 * e.vocal).toFixed(3)}:attack=10:release=150:makeup=${(1 + .5 * e.vocal).toFixed(3)}`)
+  // Gentle shelf, not a hard low-pass: preserve speech intelligibility/air.
+  if (e.hiss > 0) filters.push(`treble=f=8000:t=q:w=0.707:g=${(-Math.min(3, e.hiss / 6)).toFixed(3)}`)
   if (e.compression > 0) filters.push(`acompressor=threshold=0.125:ratio=${(1 + 5 * e.compression).toFixed(3)}:attack=10:release=250:knee=4:detection=rms:makeup=1`)
   // Continuous source processing is required: the centered smoother looks ahead.
   // Stereo coupling preserves placement; a -50 dB floor avoids boosting silence.

@@ -85,7 +85,8 @@ export function moveClips(edit: TimelineEdit, ids: string[], requested: number, 
 export function splitClips(edit: TimelineEdit, ids: string[], time: number, minimum: number, createId = () => crypto.randomUUID()) {
   const selected = new Set(linkedSelection(edit, ids))
   const splittable = all(edit).filter((c) => selected.has(c.id) && time > c.at + 1e-7 && time < endAt(c) - 1e-7)
-  if (!splittable.some((c) => time > c.at + minimum && time < endAt(c) - minimum)) return { edit, selection: ids }
+  // Never create a near-zero linked fragment while its partner splits normally.
+  if (!splittable.length || splittable.some((c) => time <= c.at + minimum || time >= endAt(c) - minimum)) return { edit, selection: ids }
   if (tracks.some((track) => edit[track].some((c) => selected.has(c.id) && time > c.at && time < endAt(c) && edit[track].some((other) => other.id !== c.id && other.lane === c.lane && time >= other.at - 1e-7 && time <= endAt(other) + 1e-7)))) return { edit, selection: ids }
   const splitIds = new Set(splittable.map((c) => c.id))
   const links = new Map<string, { left: string; right: string }>()
@@ -110,19 +111,30 @@ export function splitClips(edit: TimelineEdit, ids: string[], time: number, mini
   if (tracks.some((track) => result.lanes[track].some((_, lane) => !validLane(result[track].filter((c) => c.lane === lane))))) return { edit, selection: ids }
   return { edit: result, selection: linkedSelection(result, selection) }
 }
-export function trimClip(edit: TimelineEdit, id: string, edge: 'start' | 'end', value: number, sourceDuration: number, minimum: number) {
-  const next = map(edit, (clip, track) => {
-    if (clip.id !== id || !Number.isFinite(value)) return clip
-    const clips = ordered(edit[track].filter((c) => c.lane === clip.lane)), index = clips.findIndex((c) => c.id === id)
-    if (edge === 'start') {
-      const earliest = Math.max(0, clip.start - clip.at, index ? clip.start + clips[index - 1].at + minimum - clip.at : 0, index > 1 ? clip.start + endAt(clips[index - 2]) - clip.at : 0)
-      const start = Math.max(earliest, Math.min(clip.end - minimum, index < clips.length - 1 ? clip.start + clips[index + 1].at - clip.at - minimum : Infinity, value))
-      return Math.abs(start - clip.start) < 1e-9 ? clip : { ...clip, start, at: clip.at + start - clip.start }
-    }
-    const latest = Math.min(sourceDuration, index < clips.length - 1 ? clip.start + endAt(clips[index + 1]) - minimum - clip.at : sourceDuration, index < clips.length - 2 ? clip.start + clips[index + 2].at - clip.at : sourceDuration)
-    const end = Math.max(clip.start + minimum, index ? clip.start + endAt(clips[index - 1]) - clip.at + minimum : 0, Math.min(latest, value))
-    return Math.abs(end - clip.end) < 1e-9 ? clip : { ...clip, end }
-  })
-  if (all(next).some((c) => c.id === id && (c.start < 0 || c.end > sourceDuration || c.end <= c.start)) || tracks.some((track) => next.lanes[track].some((_, lane) => !validLane(next[track].filter((c) => c.lane === lane))))) return edit
-  return next
+// Trim every linked partner by one shared source/timeline delta. Staggered edges
+// stay staggered: do not force different recordings to share source IN/OUT values.
+export function trimLinkedClips(edit: TimelineEdit, id: string, edge: 'start' | 'end', value: number, sourceDurations: Record<string, number>, minimum: number) {
+  const reference = all(edit).find((c) => c.id === id)
+  if (!reference || !Number.isFinite(value) || !Number.isFinite(minimum) || minimum <= 0) return { edit, delta: 0, limited: false }
+  const ids = new Set(linkedSelection(edit, [id])), group = all(edit).filter((c) => ids.has(c.id)), requested = value - reference[edge]
+  let lower = -Infinity, upper = Infinity
+  for (const c of group) {
+    const duration = sourceDurations[c.mediaId], keep = Math.min(minimum, length(c))
+    if (!Number.isFinite(duration) || duration < c.end - 1e-7) return { edit, delta: 0, limited: true }
+    if (edge === 'start') { lower = Math.max(lower, -c.start, -c.at); upper = Math.min(upper, length(c) - keep) }
+    else { lower = Math.max(lower, keep - length(c)); upper = Math.min(upper, Math.max(0, duration - c.end)) }
+  }
+  let delta = Math.max(lower, Math.min(upper, requested))
+  const changed = (amount: number) => map(edit, (c) => !ids.has(c.id) ? c : edge === 'start' ? { ...c, start: Math.max(0, c.start + amount), at: Math.max(0, c.at + amount) } : { ...c, end: c.end + amount })
+  const affected = tracks.flatMap((track) => [...new Set(edit[track].filter((c) => ids.has(c.id)).map((c) => c.lane))].map((lane) => ({ track, lane })))
+  const valid = (next: TimelineEdit) => affected.every(({ track, lane }) => validLane(next[track].filter((c) => c.lane === lane)))
+  // Lane constraints are linear until ordering would change; clamp before a
+  // nested/triple overlap or ordering reversal, never trim only one partner.
+  if (!valid(changed(delta))) {
+    let low = 0, high = 1
+    for (let i = 0; i < 32; i++) { const fraction = (low + high) / 2; if (valid(changed(delta * fraction))) low = fraction; else high = fraction }
+    delta *= low
+  }
+  if (Math.abs(delta) < 1e-9) return { edit, delta: 0, limited: Math.abs(requested) > 1e-7 }
+  return { edit: changed(delta), delta, limited: Math.abs(delta - requested) > 1e-7 }
 }

@@ -4,7 +4,7 @@ import { effectLimits } from './effects.js'
 import { randomUUID } from 'node:crypto'
 import { readFile, open, rename, unlink, stat } from 'node:fs/promises'
 export type Project = {
-  format: 'magic-keyframe-project'; version: 5
+  format: 'magic-keyframe-project'; version: 6
   media: { id: string; kind: 'video' | 'audio'; path: string; absolutePath?: string }[]
   edit: TimelineEdit
   view: { position: number; zoom: number; timelineHeight: number; sidebarWidth: number }
@@ -12,7 +12,7 @@ export type Project = {
 const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n)
 export function validateProject(value: unknown): Project {
   const p = structuredClone(value) as Project
-  if (!p || p.format !== 'magic-keyframe-project' || ![1, 2, 3, 4, 5].includes(p.version)) throw new Error('Not a supported Magic Keyframe project (versions 1–5).')
+  if (!p || p.format !== 'magic-keyframe-project' || ![1, 2, 3, 4, 5, 6].includes(p.version)) throw new Error('Not a supported Magic Keyframe project (versions 1–6).')
   if (!Array.isArray(p.media) || p.media.length > 200 || !p.edit || !p.view) throw new Error('Invalid project structure.')
   if (Number(p.version) < 3) {
     const legacy = p as unknown as { tracks: { videoMuted: boolean; audioMuted: boolean; videoHidden: boolean }; edit: TimelineEdit & { audioOffset?: number } }
@@ -26,7 +26,7 @@ export function validateProject(value: unknown): Project {
       const source = p.media.find((m) => m.kind === track)
       p.edit[track] = p.edit[track].map((c) => ({ ...c, mediaId: source?.id || '', lane: 0, at: Number(p.version) === 1 ? c.start + (track === 'audio' ? offset! : 0) : c.at }))
     }
-    p.edit = { video: p.edit.video, audio: p.edit.audio, lanes }; p.version = 5
+    p.edit = { video: p.edit.video, audio: p.edit.audio, lanes }; p.version = 6
   }
   // Earlier builds permitted audio pre-roll before zero. Shift the whole edit,
   // including the saved playhead, to preserve sync and keep every clip visible.
@@ -35,7 +35,7 @@ export function validateProject(value: unknown): Project {
     for (const c of [...p.edit.video, ...p.edit.audio]) c.at -= earliest
     p.view.position -= earliest
   }
-  p.version = 5
+  p.version = 6
   const ids = new Map<string, 'video' | 'audio'>()
   for (const m of p.media) {
     if (!m || typeof m.id !== 'string' || !m.id || ids.has(m.id) || !['video', 'audio'].includes(m.kind) || typeof m.path !== 'string' || !m.path || (m.absolutePath !== undefined && typeof m.absolutePath !== 'string')) throw new Error('Invalid project media.')

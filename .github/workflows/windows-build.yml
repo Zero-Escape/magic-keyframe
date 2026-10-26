@@ -55,6 +55,15 @@ jobs:
             Open your existing .mkproj file using File → Open project. Projects reference your original media; keep that footage.
             Use File → Associate .mkproj files with this app to register this portable location; Windows may still require Open with → Always.
 
+            ## Mic hiss cleanup and linked trims (0.8.0)
+            - Effects > Audio: Mic hiss reduction plus Gentle/Stronger/Off presets; Apply to prepare.
+            - Adaptive spectral cleanup and a gentle treble shelf; preview/export share continuous cached processing.
+            - Linked edge drags and IN/OUT changes use one shared trim delta, preserving sync/staggered edges.
+            - Whole groups stop together at source/timeline/overlap limits; one undo step per gesture.
+            - Split every linked partner crossing the playhead; block near-zero fragments.
+            - Reads projects v1-v5, saves v6. Use Save As to retain a copy for older builds.
+            - Build/package and filter-source checks are not runtime validation of the new features.
+
             ## Export-boundary flash correction (0.7.1)
             - Retain the last picture within a clip's valid span if its piece input reaches EOF early.
             - Read up to two extra frames per input for bounded frame-rate-conversion look-ahead.
@@ -90,7 +99,7 @@ jobs:
             - Drag adjacent same-track clips into an edge overlap: video cross-dissolve and equal-power audio crossfade.
             - Linked moves preserve offsets. Two-way overlaps only; split outside transition boundaries.
             - All clips stop at zero; legacy negative pre-roll shifts the complete timeline right without changing sync.
-            - Timeline extent expands during dragging. Saving now writes v5; use Save As to keep older files.
+            - Timeline extent expands during dragging. Saving now writes v6; use Save As to keep older files.
 
             ## Playback and Windows workflow fixes (0.4.2)
             - Contiguous same-source splits avoid needless seeks; pause/resume no longer seeks by itself.
@@ -115,7 +124,7 @@ jobs:
             - Autosave recovery copies (5-second idle / 30-second periodic, retaining 10 versions per project).
             - 4K / 1080p delivery, both 8-bit H.264/AAC Rec.709 MP4.
 
-            Existing v1-v4 projects open. Saving writes v5; use Save As to retain an old-format copy.
+            Existing v1-v5 projects open. Saving writes v6; use Save As to retain an old-format copy.
             Select a clip and open Effects; draft settings must be applied before they are saved/exported.
             Imports append on track 1; + on a media item adds a copy at the playhead, using a free new track if needed.
             Add tracks with +V / +A; assign clips through the Effects track selector.

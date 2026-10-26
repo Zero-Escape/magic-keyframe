@@ -1,6 +1,6 @@
 # Magic Keyframe
 
-A focused Windows wedding-video editor. **v0.7.1 is an unsigned development/test build,
+A focused Windows wedding-video editor. **v0.8.0 is an unsigned development/test build,
 not a verified client-delivery system.** New editing, DSP, sync, recovery and rendering
 paths need hands-on Windows checking; build/archive checks alone do not prove them.
 
@@ -56,8 +56,14 @@ the playhead into separate left/right linked groups. Select the middle group and
 **Remove/Delete**, then move the ending group left to close the gap. Edge snapping
 helps; **Alt** disables snapping. Gaps remain black/silent until explicitly closed.
 
-Drag clip edges or edit source-second **IN/OUT** fields to trim. Trimming one linked
-partner preserves the timing of its remaining content. ±1 frame steps the playhead;
+Drag clip edges or edit source-second **IN/OUT** fields to trim. **Linked partners
+trim together by one shared time delta**, preserving their existing source offsets
+and staggered edges. Start trims change source IN and timeline placement together;
+end trims change source OUT. If any partner reaches its source boundary, timeline
+zero, minimum length or an invalid overlap, the whole group stops together. **Unlink**
+to trim one independently. One trim gesture is one undo step. Splits cut every linked
+partner crossing the playhead at the same timeline time and preserve left/right
+link groups; insufficient material on either side blocks the split. ±1 frame steps the playhead;
 Alt+left/right nudges the selection. No clips can be moved/extended before zero.
 Moving/trimming/splitting/removing pauses playback; mute switches can be used while
 playing. Clip editing does not seek the paused playhead. The ruler/empty track space
@@ -102,7 +108,7 @@ keyboard controls. Shared overlap transitions replace the fades at those edges.
 ### Audio
 
 Per-clip gain (−60 to +18 dB), audio fades, independent compression/leveling,
-voice clarity and spectral noise reduction are in **Effects → Audio**.
+mic-hiss reduction, voice clarity and spectral noise reduction are in **Effects → Audio**.
 
 - **Compress loud peaks** narrows dynamic range; **Level quiet / loud passages**
   gradually brings softer sections up. **Level speech / music** is a starting preset,
@@ -112,6 +118,14 @@ voice clarity and spectral noise reduction are in **Effects → Audio**.
   range, then adjusts draft gain toward −16 LUFS, limited by −1.5 dBTP headroom.
   Click **Apply** to save. The reading excludes fades, overlap gains and other tracks.
   For music/vows at different levels, split into sections and match each separately.
+- **Mic hiss reduction** targets steady broadband microphone/preamp noise using
+  adaptive spectral denoising and a gentle high-frequency shelf, not a hard gate.
+  Start with **Gentle de-hiss (6 dB)**, then **Apply**. Stronger (12 dB) and Off presets
+  are available; the slider ranges 0–18 dB. Compare with headphones: strong cleanup
+  may dull voices/music or introduce watery artifacts. It is not a fix for ringing
+  feedback, hum, wind or competing speech. General noise reduction and de-hiss share
+  one spectral pass (larger amount, not the sum). Off disables only de-hiss, not
+  other enabled audio effects. It uses the same continuous preview/export cache.
 - Voice clarity is conventional high-pass/presence EQ/compression; noise reduction
   is spectral denoising. These controls **cannot isolate speech from simultaneous music**.
 - Gain/fades audition live. Other processing is prepared once on **Apply** as a
@@ -162,8 +176,8 @@ baseline clears obsolete recovery copies; in-flight writes/cleanup are serialize
 Only committed edits are recovered, not un-applied Effects drafts. Manual saves remain
 useful; this is periodic recovery, not a guarantee against every kind of disk/power loss.
 
-v0.7.0 reads existing v1–v4 projects and upgrades them in memory. Saving writes **v5**
-for the new audio controls. Older apps cannot open v5; use **Save as** to
+v0.8.0 reads existing v1–v5 projects and upgrades them in memory. Saving writes **v6**
+for de-hiss settings. Older apps cannot open v6; use **Save as** to
 keep an old-format copy if needed. Source media and preview caches stay local.
 
 ## Delivery export
@@ -329,3 +343,11 @@ unchanged. The supplied project timing corroborated a Balanced boundary near
 5:22.956. Sample inspection proves the old encoded artifact; compilation/package
 inspection does not prove a corrected real-footage export. Re-export the same short
 range in the updated app before rendering the full project again.
+
+### Sony S-Cinetone footage
+
+S-Cinetone changes the camera's rendered color/tonal look, not whether a file is
+10-bit 4:2:2 H.264. It is not S-Log and should not automatically receive an S-Log3-to-
+Rec.709 LUT. Use gentle SDR adjustments as needed; the app does not infer picture
+profiles or apply automatic camera LUTs. The current compatible 8-bit Rec.709 MP4
+export remains unchanged. Direct Chromium preview may still need optional proxies.

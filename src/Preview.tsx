@@ -37,14 +37,14 @@ export function Meter({ mixer, lane }: { mixer: AudioMixer | null; lane?: string
 }
 function AudioLane({ clip, item, muted, playing, position, mixer, override, mixGain = 1 }: { clip?: Segment; item?: MediaItem; muted: boolean; playing: boolean; position: number; mixer: AudioMixer | null; override?: Partial<ClipEffects>; mixGain?: number }) {
   const ref = useRef<HTMLAudioElement>(null), [processed, setProcessed] = useState<{ key: string; url: string }>(), [error, setError] = useState('')
-  const fx = effects(override || clip?.effects), processingKey = `${item?.path || ''}:${fx.vocal}:${fx.noise}:${fx.compression}:${fx.leveling}`
+  const fx = effects(override || clip?.effects), processingKey = `${item?.path || ''}:${fx.vocal}:${fx.noise}:${fx.hiss}:${fx.compression}:${fx.leveling}`
   const gainRef = useRef<GainNode | null>(null), previous = useRef<{ src?: string; wanted: number; playing: boolean; offset: number } | undefined>(undefined), pending = useRef(false)
   const active = useRef({ clip, muted, playing, position, fx, mixGain }); active.current = { clip, muted, playing, position, fx, mixGain }
   useEffect(() => {
     if (muted || !item?.metadata.audio || !window.magicKey) return
     let canceled = false; setError('')
-    if (!fx.vocal && !fx.noise && !fx.compression && !fx.leveling && item.audioUrl) { setProcessed({ key: processingKey, url: item.audioUrl }); return }
-    void window.magicKey.audioPreview(item.path, { vocal: fx.vocal, noise: fx.noise, compression: fx.compression, leveling: fx.leveling }).then((result) => { if (!canceled) setProcessed({ key: processingKey, url: result.url }) }).catch((err) => { if (!canceled) setError(String(err)) })
+    if (!fx.vocal && !fx.noise && !fx.hiss && !fx.compression && !fx.leveling && item.audioUrl) { setProcessed({ key: processingKey, url: item.audioUrl }); return }
+    void window.magicKey.audioPreview(item.path, { vocal: fx.vocal, noise: fx.noise, hiss: fx.hiss, compression: fx.compression, leveling: fx.leveling }).then((result) => { if (!canceled) setProcessed({ key: processingKey, url: result.url }) }).catch((err) => { if (!canceled) setError(String(err)) })
     return () => { canceled = true }
   }, [processingKey, item?.audioUrl, muted])
   const ready = processed?.key === processingKey
@@ -175,7 +175,7 @@ function AudioTrack({ clips, media, lane, playing, position, mixer, draft }: { c
   const slots = useDecoderSlots(upcoming ? [...active, upcoming] : active, position)
   return <>{slots.map((slot, i) => {
     const clip = slot.active ? slot.clip : undefined, item = clip && media.find((m) => m.id === clip.mediaId)
-    const stored = effects(clip?.effects), proposed = draft && clip?.id === draft.id ? { ...draft.value, vocal: stored.vocal, noise: stored.noise, compression: stored.compression, leveling: stored.leveling } : stored
+    const stored = effects(clip?.effects), proposed = draft && clip?.id === draft.id ? { ...draft.value, vocal: stored.vocal, noise: stored.noise, hiss: stored.hiss, compression: stored.compression, leveling: stored.leveling } : stored
     const blend = clip ? transitionEdges(clips, clip) : { incoming: 0, outgoing: 0 }
     return <AudioLane key={i} clip={clip} item={item} muted={lane.muted} playing={playing && slot.active && !!clip && position >= clip.at} position={clip ? Math.max(position, clip.at) : position} mixer={mixer} override={{ ...proposed, audioFadeIn: blend.incoming ? 0 : proposed.audioFadeIn, audioFadeOut: blend.outgoing ? 0 : proposed.audioFadeOut }} mixGain={clip && position >= clip.at ? transitionGain(clips, clip, position) : 0} />
   })}</>
