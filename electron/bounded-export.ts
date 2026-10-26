@@ -24,7 +24,9 @@ function planWindow(edit: TimelineEdit, media: RenderMedia[], start: number, dur
     const audio = !edit.lanes[kind][c.lane].muted && source.audio
     if (!video && !audio) continue
     const from = Math.max(start, c.at), to = Math.min(finish, endAt(c)), preroll = Math.ceil(fps * .3) / fps
-    const timing = { seek: Math.max(c.start, c.start + from - c.at - preroll), stop: Math.min(c.end, c.start + to - c.at) }, processed = prepared.get(c.id)
+    // Small bounded look-ahead lets fps finish the last requested frame without
+    // treating every internal render-window edge as the source EOF.
+    const timing = { seek: Math.max(c.start, c.start + from - c.at - preroll), stop: Math.min(c.end, c.start + to - c.at + 2 / fps) }, processed = prepared.get(c.id)
     if (video || audio && !processed) inputs.push({ ...source, id: c.id, video, audio: audio && !processed, ...timing })
     if (audio && processed) inputs.push({ id: `${c.id}:processed`, path: processed, video: false, audio: true, audioFor: c.id, processed: true, ...timing })
     active.add(c.id)

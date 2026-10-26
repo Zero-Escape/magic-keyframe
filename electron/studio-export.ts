@@ -31,7 +31,10 @@ export function buildStudioExport(edit: TimelineEdit, media: RenderMedia[], widt
       `setpts=PTS+${(c.at - start).toFixed(6)}/TB`,
     ]
     filters.push(`[${videoLabels.get(c.id)}]${chain.join(',')}[vc${i}]`)
-    filters.push(`[base${i}][vc${i}]overlay=eof_action=pass:repeatlast=0:enable='gte(t,${(from - start).toFixed(6)})*lt(t,${(to - start).toFixed(6)})'[base${i + 1}]`)
+    // A sought, frame-rate-converted input can signal EOF one output frame early.
+    // Hold its last picture only inside this clip/window's explicit enable span;
+    // real timeline gaps and the end of the clip still reveal the lower layer.
+    filters.push(`[base${i}][vc${i}]overlay=eof_action=repeat:repeatlast=1:enable='gte(t,${(from - start).toFixed(6)})*lt(t,${(to - start).toFixed(6)})'[base${i + 1}]`)
   })
   filters.push(`[base${visible.length}]trim=duration=${duration.toFixed(6)},setpts=PTS-STARTPTS[vout]`)
   const labels: string[] = []

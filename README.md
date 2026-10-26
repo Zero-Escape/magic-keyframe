@@ -1,6 +1,6 @@
 # Magic Keyframe
 
-A focused Windows wedding-video editor. **v0.7.0 is an unsigned development/test build,
+A focused Windows wedding-video editor. **v0.7.1 is an unsigned development/test build,
 not a verified client-delivery system.** New editing, DSP, sync, recovery and rendering
 paths need hands-on Windows checking; build/archive checks alone do not prove them.
 
@@ -316,3 +316,16 @@ recovered filename, or its scratch path is preserved in the error instead of del
 See [implementation/research notes](docs/OPTIMIZATION-0.7.md) for tradeoffs and remaining
 runtime checks. Before client delivery, open a copy of the project, export a short
 representative sample, and inspect picture, sync, transitions and audio on Windows.
+
+### Export-piece flash correction (0.7.1)
+
+A supplied export had a single encoded black frame immediately before an internal
+render-piece boundary and another at its end. The piece compositor previously
+exposed black on input EOF; frame conversion/input cutoffs could end picture early.
+The compositor now repeats the last picture only within the clip/window enable
+span, and inputs receive two frames of bounded post-roll for frame-rate conversion.
+Intentional gaps/hidden lanes remain black; source trims, fades and placements are
+unchanged. The supplied project timing corroborated a Balanced boundary near
+5:22.956. Sample inspection proves the old encoded artifact; compilation/package
+inspection does not prove a corrected real-footage export. Re-export the same short
+range in the updated app before rendering the full project again.

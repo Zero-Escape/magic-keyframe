@@ -55,6 +55,13 @@ jobs:
             Open your existing .mkproj file using File → Open project. Projects reference your original media; keep that footage.
             Use File → Associate .mkproj files with this app to register this portable location; Windows may still require Open with → Always.
 
+            ## Export-boundary flash correction (0.7.1)
+            - Retain the last picture within a clip's valid span if its piece input reaches EOF early.
+            - Read up to two extra frames per input for bounded frame-rate-conversion look-ahead.
+            - Intentional timeline gaps, clip trims, fades and memory/thread limits remain unchanged.
+            - Supplied sample had an encoded black frame immediately before a piece boundary; project timing corroborated it.
+            - Re-export the affected short range to confirm the correction on original footage before a full delivery render.
+
             ## Optimization and audio tools (0.7.0)
             - Event-driven video texture updates; cached waveform peaks and transition lookups; muted lanes stop decoding.
             - Lower-priority, limited-thread background media jobs; export cancels background audio/proxies.
