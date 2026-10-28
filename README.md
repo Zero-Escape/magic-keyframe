@@ -1,6 +1,6 @@
 # Magic Keyframe
 
-A focused Windows wedding-video editor. **v0.8.0 is an unsigned development/test build,
+A focused Windows wedding-video editor. **v0.8.1 is an unsigned development/test build,
 not a verified client-delivery system.** New editing, DSP, sync, recovery and rendering
 paths need hands-on Windows checking; build/archive checks alone do not prove them.
 
@@ -53,15 +53,23 @@ selection to that clip/linked group. Source trim points and relative sync are pr
 (`Ctrl+Shift+L`) lets you adjust partners independently. Linked partners select, move,
 nudge and remove together. **Split** (`Ctrl+B`) splits all selected partners crossing
 the playhead into separate left/right linked groups. Select the middle group and
-**Remove/Delete**, then move the ending group left to close the gap. Edge snapping
-helps; **Alt** disables snapping. Gaps remain black/silent until explicitly closed.
+**Remove/Delete**, then move the ending group left to close the gap.
+
+**Snap** in the timeline toolbar enables/disables edge snapping for moves and
+edge trims across all video/audio tracks, plus zero and the playhead. It defaults
+on and remembers your choice locally; hold **Alt** to bypass temporarily. A gold
+vertical guide marks the actual alignment. Snapping joins edges or aligns starts/ends
+without merging clips. Any gaps you leave remain black/silent.
 
 Drag clip edges or edit source-second **IN/OUT** fields to trim. **Linked partners
 trim together by one shared time delta**, preserving their existing source offsets
 and staggered edges. Start trims change source IN and timeline placement together;
 end trims change source OUT. If any partner reaches its source boundary, timeline
 zero, minimum length or an invalid overlap, the whole group stops together. **Unlink**
-to trim one independently. One trim gesture is one undo step. Splits cut every linked
+to trim one independently. The ruler extent stays fixed throughout an edge drag
+(shrinking or extending), then fits the new longest clip after release. One trim
+gesture is one undo step. Typed IN/OUT retain normal frame rounding without magnetic
+snapping. Splits cut every linked
 partner crossing the playhead at the same timeline time and preserve left/right
 link groups; insufficient material on either side blocks the split. ±1 frame steps the playhead;
 Alt+left/right nudges the selection. No clips can be moved/extended before zero.
@@ -351,3 +359,22 @@ S-Cinetone changes the camera's rendered color/tonal look, not whether a file is
 Rec.709 LUT. Use gentle SDR adjustments as needed; the app does not infer picture
 profiles or apply automatic camera LUTs. The current compatible 8-bit Rec.709 MP4
 export remains unchanged. Direct Chromium preview may still need optional proxies.
+
+### Stable trim scale and optional snapping (0.8.1)
+
+Edge-trim scale now uses a dedicated captured extent, independent of the live
+longest-clip duration. Fit/zoom changes are blocked during trimming; mouse release,
+pointer cancellation or capture loss unlocks the ruler. Clip-body release handling
+cannot accidentally clear a trim's scale lock. Clip moves retain their existing
+extent expansion. Linked group offsets and trim limits are unchanged.
+
+The optional Snap toggle applies an ~8-screen-pixel magnetic radius at the current
+zoom. It aligns any moved group edge or trimmed linked edge with stationary clip
+starts/ends across all tracks, zero or the playhead. Selected/linked edges are not
+self-targets. Source/timeline/overlap limits still take precedence; the guide is
+shown only if the snapped position is actually accepted. Turn Snap off or hold Alt
+to place overlaps/crossfades freely. This is edge alignment, not waveform auto-sync.
+
+Production/package checks are not mouse-interaction verification. Try trimming the
+longest linked clip, release, undo, and compare Snap on/off on the Windows app.
+Project format remains v6; media/rendering code is unchanged.

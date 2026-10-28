@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { AudioLines, Download, Eye, EyeOff, FilePlus2, FolderOpen, KeyRound, Link2, Pause, Play, Plus, Redo2, Save, Scissors, SkipBack, SkipForward, Trash2, Undo2, Unlink2, Video, Volume2, VolumeX, WandSparkles } from 'lucide-react'
+import { AudioLines, Download, Eye, EyeOff, FilePlus2, FolderOpen, KeyRound, Link2, Magnet, Pause, Play, Plus, Redo2, Save, Scissors, SkipBack, SkipForward, Trash2, Undo2, Unlink2, Video, Volume2, VolumeX, WandSparkles } from 'lucide-react'
 import { activeClip, emptyEdit, endAt, linkedSelection, linkClips, moveClips, ordered, removeClips, splitClips, timelineEnd, transitionEdges, trimLinkedClips, unlinkClips, type Segment, type TimelineEdit, type Track } from '../electron/timeline'
 import { effects, defaultEffects, effectLimits, type ClipEffects } from '../electron/effects'
 import type { MediaItem, Snapshot } from './editor-types'
@@ -29,7 +29,9 @@ export default function App() {
   const [proxies, setProxies] = useState<Record<string, string>>({}), [proxyErrors, setProxyErrors] = useState<Record<string, string>>({})
   const [proxyMode, setProxyMode] = useState(false), [proxyProgress, setProxyProgress] = useState<Record<string, ProxyProgress>>({}), [cancelingProxies, setCancelingProxies] = useState(false)
   const [timelineHeight, setTimelineHeight] = useState(380), [sidebarWidth, setSidebarWidth] = useState(320)
-  const [viewport, setViewport] = useState({ width: 1, scroll: 0 }), [dragDuration, setDragDuration] = useState<number | null>(null)
+  const [viewport, setViewport] = useState({ width: 1, scroll: 0 }), [dragDuration, setDragDuration] = useState<number | null>(null), [trimDuration, setTrimDuration] = useState<number | null>(null)
+  const [snapping, setSnapping] = useState(() => { try { return localStorage.getItem('mk-timeline-snap') !== 'off' } catch { return true } }), [snapGuide, setSnapGuide] = useState<number>()
+  useEffect(() => { try { localStorage.setItem('mk-timeline-snap', snapping ? 'on' : 'off') } catch { /* Optional UI preference. */ } }, [snapping])
   const [trimDraft, setTrimDraft] = useState({ start: '0.000', end: '0.000' }), [exportProject, setExportProject] = useState<ProjectData | null>(null)
   const [recoveries, setRecoveries] = useState<RecoveryInfo[]>([]), [autosaved, setAutosaved] = useState<number | null>(null)
   const [syncBusy, setSyncBusy] = useState(false), [candidate, setCandidate] = useState<SyncCandidate | null>(null), [audition, setAudition] = useState<TimelineEdit | null>(null)
@@ -42,13 +44,14 @@ export default function App() {
   const proxyAttempted = useRef(new Set<string>()), proxyInFlight = useRef(new Set<string>())
   const positionRef = useRef(0), playClock = useRef({ time: 0, now: 0 }), playbackEnd = useRef(0)
   const tracksRef = useRef<HTMLDivElement>(null), viewportRef = useRef<HTMLDivElement>(null), dragDepth = useRef(0), scrubbing = useRef(false)
-  const clipDrag = useRef<{ x: number; scroll: number; base: Snapshot; ids: string[]; moved: boolean; scale: number; collapse?: string[] } | null>(null)
-  const trimDrag = useRef<{ kind: Track; id: string; edge: 'start' | 'end'; x: number; scroll: number; scale: number; base: Snapshot; moved: boolean; limited: boolean } | null>(null)
+  const clipDrag = useRef<{ pointerId: number; x: number; scroll: number; base: Snapshot; ids: string[]; moved: boolean; scale: number; collapse?: string[] } | null>(null)
+  const trimDrag = useRef<{ pointerId: number; kind: Track; id: string; edge: 'start' | 'end'; x: number; scroll: number; scale: number; base: Snapshot; moved: boolean; limited: boolean } | null>(null)
   const fadeDrag = useRef<{ id: string; kind: Track; edge: 'fadeIn' | 'fadeOut' | 'audioFadeIn' | 'audioFadeOut'; x: number; scroll: number; scale: number; initial: number; max: number; base: Snapshot; moved: boolean } | null>(null)
   const [activeFade, setActiveFade] = useState<string | null>(null)
   const resizing = useRef<{ kind: 'sidebar' | 'timeline'; initial: number; x: number; y: number } | null>(null)
   const fp = useMemo(() => fingerprint(state), [state]), dirty = fp !== savedFingerprint, projectDuration = timelineEnd(edit)
-  const timelineDuration = Math.max(dragDuration || 0, projectDuration, 1)
+  // A trim is a fixed coordinate system, not a live fit-to-content calculation.
+  const timelineDuration = trimDuration ?? Math.max(dragDuration || 0, projectDuration, 1)
   const live = useRef({ state, fp, dirty, projectPath }); live.current = { state, fp, dirty, projectPath }
   const selectedClips = [...edit.video, ...edit.audio].filter((c) => selection.includes(c.id))
   const selected = selectedClips.find((c) => c.id === focusId) || selectedClips[0]
@@ -71,7 +74,7 @@ export default function App() {
   const record = (snapshot = state) => { setUndoStack((items) => [...items.slice(-99), snapshot]); setRedoStack([]) }
   const commit = (next: Snapshot, pause = true) => { if (fingerprint(next) === fp) return; if (pause) stop(); record(); setState(next) }
   const commitEdit = (next: TimelineEdit, pause = true) => commit({ media, edit: next }, pause)
-  const restore = (next: Snapshot) => { stop(); setState(next); setSelection([]); setFocusId(''); setActiveLane({ kind: 'video', lane: 0 }); setDraft(undefined); setCandidate(null); clipDrag.current = null; trimDrag.current = null; fadeDrag.current = null; setActiveFade(null); setDragDuration(null) }
+  const restore = (next: Snapshot) => { stop(); setState(next); setSelection([]); setFocusId(''); setActiveLane({ kind: 'video', lane: 0 }); setDraft(undefined); setCandidate(null); clipDrag.current = null; trimDrag.current = null; fadeDrag.current = null; setActiveFade(null); setDragDuration(null); setTrimDuration(null); setSnapGuide(undefined) }
   const undo = () => { if (!undoStack.length) return; setRedoStack((s) => [...s, state]); restore(undoStack.at(-1)!); setUndoStack((s) => s.slice(0, -1)) }
   const redo = () => { if (!redoStack.length) return; setUndoStack((s) => [...s, state]); restore(redoStack.at(-1)!); setRedoStack((s) => s.slice(0, -1)) }
   const draftChanged = useCallback((value?: { id: string; value: ClipEffects }) => setDraft(value), [])
@@ -317,43 +320,44 @@ export default function App() {
   const beginScrub = (event: React.PointerEvent) => { if (event.button !== 0 || (event.target as Element).closest('[data-segment-id]')) return; event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); scrubbing.current = true; seek(Math.round(timelinePoint(event.clientX) * fps) / fps) }
   const moveScrub = (event: React.PointerEvent) => { if (scrubbing.current) seek(Math.round(timelinePoint(event.clientX) * fps) / fps) }
   const beginClip = (event: React.PointerEvent, kind: Track, clip: Segment) => {
-    if (event.button !== 0) return
+    if (event.button !== 0 || operation.current || trimDrag.current) return
     event.preventDefault(); event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); setFocusId(clip.id); setActiveLane({ kind, lane: clip.lane })
     const group = linkedSelection(edit, [clip.id]), additive = event.ctrlKey || event.metaKey || event.shiftKey
     const ids = additive ? selection.includes(clip.id) ? selection.filter((id) => !group.includes(id)) : linkedSelection(edit, [...selection, ...group]) : selection.includes(clip.id) ? linkedSelection(edit, selection) : group
     setSelection(ids); if (!ids.includes(clip.id)) return
-    setDragDuration(timelineDuration); clipDrag.current = { x: event.clientX, scroll: viewportRef.current?.scrollLeft || 0, base: state, ids, moved: false, scale: timelineDuration / tracksRef.current!.clientWidth, collapse: !additive && ids.length > group.length ? group : undefined }
+    setSnapGuide(undefined); setDragDuration(timelineDuration); clipDrag.current = { pointerId: event.pointerId, x: event.clientX, scroll: viewportRef.current?.scrollLeft || 0, base: state, ids, moved: false, scale: timelineDuration / tracksRef.current!.clientWidth, collapse: !additive && ids.length > group.length ? group : undefined }
   }
   const moveClip = (event: React.PointerEvent) => {
-    event.stopPropagation(); const drag = clipDrag.current; if (!drag) return
+    event.stopPropagation(); const drag = clipDrag.current; if (!drag || drag.pointerId !== event.pointerId) return
     const pixels = event.clientX - drag.x + (viewportRef.current?.scrollLeft || 0) - drag.scroll
     if (!drag.moved && Math.abs(pixels) < 3) return
-    const result = moveClips(drag.base.edit, drag.ids, Math.round(pixels * drag.scale * fps) / fps, event.altKey ? 0 : 8 * drag.scale, positionRef.current)
+    const result = moveClips(drag.base.edit, drag.ids, Math.round(pixels * drag.scale * fps) / fps, snapping && !event.altKey ? 8 * drag.scale : 0, positionRef.current)
+    setSnapGuide(result.snapTime)
     if (!drag.moved && !result.delta) return
     if (!drag.moved) { stop(); record(drag.base); drag.moved = true }
     setState({ media: drag.base.media, edit: result.edit })
   }
-  const endClip = () => { const drag = clipDrag.current; if (drag && !drag.moved && drag.collapse) setSelection(drag.collapse); clipDrag.current = null; setDragDuration(null) }
+  const endClip = (event: React.PointerEvent) => { const drag = clipDrag.current; if (!drag || drag.pointerId !== event.pointerId) return; event.stopPropagation(); if (!drag.moved && drag.collapse) setSelection(drag.collapse); clipDrag.current = null; setDragDuration(null); setSnapGuide(undefined) }
   const beginTrim = (event: React.PointerEvent, kind: Track, clip: Segment, edge: 'start' | 'end') => {
-    if (event.button !== 0 || operation.current) return
+    if (event.button !== 0 || operation.current || clipDrag.current) return
     event.preventDefault(); event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId)
-    setSelection(linkedSelection(edit, [clip.id])); setFocusId(clip.id); setActiveLane({ kind, lane: clip.lane }); setDragDuration(timelineDuration)
-    trimDrag.current = { kind, id: clip.id, edge, x: event.clientX, scroll: viewportRef.current?.scrollLeft || 0, scale: timelineDuration / tracksRef.current!.clientWidth, base: state, moved: false, limited: false }
+    setSelection(linkedSelection(edit, [clip.id])); setFocusId(clip.id); setActiveLane({ kind, lane: clip.lane }); setTrimDuration(timelineDuration); setSnapGuide(undefined)
+    trimDrag.current = { pointerId: event.pointerId, kind, id: clip.id, edge, x: event.clientX, scroll: viewportRef.current?.scrollLeft || 0, scale: timelineDuration / tracksRef.current!.clientWidth, base: state, moved: false, limited: false }
   }
   const moveTrim = (event: React.PointerEvent) => {
-    event.stopPropagation(); const drag = trimDrag.current; if (!drag) return
+    event.stopPropagation(); const drag = trimDrag.current; if (!drag || drag.pointerId !== event.pointerId) return
     const clip = drag.base.edit[drag.kind].find((c) => c.id === drag.id); if (!clip) return
     const pixels = event.clientX - drag.x + (viewportRef.current?.scrollLeft || 0) - drag.scroll
     if (!drag.moved && Math.abs(pixels) < 3) return
     const value = clip[drag.edge] + Math.round(pixels * drag.scale * fps) / fps
-    const result = trimLinkedClips(drag.base.edit, clip.id, drag.edge, value, sourceDurations, frame)
-    drag.limited = result.limited
+    const result = trimLinkedClips(drag.base.edit, clip.id, drag.edge, value, sourceDurations, frame, snapping && !event.altKey ? 8 * drag.scale : 0, positionRef.current)
+    setSnapGuide(result.snapTime); drag.limited = result.limited
     if (!drag.moved && !result.delta) return
     if (!drag.moved) { stop(); record(drag.base); drag.moved = true }
     setState({ media: drag.base.media, edit: result.edit })
   }
   const trimLimitNotice = () => setNotice({ kind: 'success', message: 'Trim stopped at a source edge, minimum clip length, timeline start or neighbouring transition. Linked clips stop together to preserve sync; unlink to edit one independently.' })
-  const endTrim = () => { if (trimDrag.current?.limited) trimLimitNotice(); trimDrag.current = null; setDragDuration(null) }
+  const endTrim = (event: React.PointerEvent) => { event.stopPropagation(); const drag = trimDrag.current; if (!drag || drag.pointerId !== event.pointerId) return; if (drag.limited) trimLimitNotice(); trimDrag.current = null; setTrimDuration(null); setSnapGuide(undefined) }
   const trimInput = (edge: 'start' | 'end') => {
     if (!selected || !selectedMedia) return
     const value = Number(trimDraft[edge]); if (!Number.isFinite(value)) return
@@ -392,7 +396,7 @@ export default function App() {
     const value = event.key === 'Home' ? 0 : event.key === 'End' ? max : Math.max(0, Math.min(max, current + delta))
     commitEdit({ ...edit, [kind]: edit[kind].map((c) => c.id === clip.id ? { ...c, effects: { ...c.effects, [edge]: value } } : c) })
   }
-  const changeZoom = (value: number) => { setZoom(value); requestAnimationFrame(() => { const node = viewportRef.current; if (node && tracksRef.current) node.scrollLeft = position / timelineDuration * tracksRef.current.clientWidth - node.clientWidth / 2 }) }
+  const changeZoom = (value: number) => { if (clipDrag.current || trimDrag.current || fadeDrag.current) return; setZoom(value); requestAnimationFrame(() => { const node = viewportRef.current; if (node && tracksRef.current) node.scrollLeft = position / timelineDuration * tracksRef.current.clientWidth - node.clientWidth / 2 }) }
   useEffect(() => {
     const node = viewportRef.current, surface = node?.closest('.timeline-scroll'); if (!node || !surface) return
     const wheel = (event: Event) => { const e = event as WheelEvent; if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return; e.preventDefault(); if (clipDrag.current || trimDrag.current || fadeDrag.current) return; const bounds = node.getBoundingClientRect(), anchor = Math.max(0, Math.min(node.clientWidth, e.clientX - bounds.left)), fraction = (node.scrollLeft + anchor) / (node.clientWidth * zoom / 100), delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? node.clientHeight : 1), next = Math.max(100, Math.min(4000, zoom * Math.exp(-delta * .002))); setZoom(next); requestAnimationFrame(() => { node.scrollLeft = fraction * node.clientWidth * next / 100 - anchor }) }
@@ -404,7 +408,7 @@ export default function App() {
   const renderClip = (kind: Track, clip: Segment) => {
     const item = media.find((m) => m.id === clip.mediaId); if (!item) return null
     const e = effects(clip.effects), d = clip.end - clip.start, blend = transitionEdges(edit[kind], clip)
-    return <div key={clip.id} data-segment-id={clip.id} className={`clip ${kind}-clip draggable ${selection.includes(clip.id) ? 'selected' : ''} ${clip.linkId ? 'linked-clip' : ''}`} style={{ left: `${clip.at / timelineDuration * 100}%`, width: `${d / timelineDuration * 100}%` }} onPointerDown={(event) => beginClip(event, kind, clip)} onPointerMove={moveClip} onPointerUp={endClip} onPointerCancel={endClip}>
+    return <div key={clip.id} data-segment-id={clip.id} className={`clip ${kind}-clip draggable ${selection.includes(clip.id) ? 'selected' : ''} ${clip.linkId ? 'linked-clip' : ''}`} style={{ left: `${clip.at / timelineDuration * 100}%`, width: `${d / timelineDuration * 100}%` }} onPointerDown={(event) => beginClip(event, kind, clip)} onPointerMove={moveClip} onPointerUp={endClip} onPointerCancel={endClip} onLostPointerCapture={endClip}>
       <span className="trim-handle left" title="Trim start (linked partners trim together)" onPointerDown={(event) => beginTrim(event, kind, clip, 'start')} onPointerMove={moveTrim} onPointerUp={endTrim} onPointerCancel={endTrim} onLostPointerCapture={endTrim} />
       <Waveform data={item.waveform} start={clip.start} end={clip.end} left={clip.at / timelineDuration * viewport.width * zoom / 100} width={d / timelineDuration * viewport.width * zoom / 100} viewport={viewport.width} scroll={viewport.scroll} />
       <div className="clip-title"><strong>{clip.linkId && <Link2 size={11} />}{item.name}</strong><small>{clock(clip.start)} → {clock(clip.end)} {Object.entries(e).some(([key, val]) => val !== defaultEffects[key as keyof ClipEffects]) && ' · FX'}</small></div>
@@ -438,10 +442,10 @@ export default function App() {
       {exporting ? <div className="viewer viewer-empty">Preview paused to leave resources for export.</div> : <Preview edit={viewEdit} media={media} proxies={previewSources} playing={playing} position={position} mixer={mixer} draft={tab === 'effects' ? draft : undefined} />}
       <div className="transport"><span className="timecode">{clock(position, true)}<em> / {clock(projectDuration, true)}</em></span><div className="transport-controls"><button title="Previous cut" onClick={() => seek(ordered(edit[activeLane.kind].filter((c) => c.lane === activeLane.lane)).reverse().find((c) => c.at < position - frame)?.at || 0)}><SkipBack size={18} /></button><button className="play-button" onClick={togglePlay}>{playing ? <Pause size={18} /> : <Play size={18} />}</button><button title="Next cut" onClick={() => seek(ordered(edit[activeLane.kind].filter((c) => c.lane === activeLane.lane)).find((c) => c.at > position + frame)?.at ?? projectDuration)}><SkipForward size={18} /></button></div><Meter mixer={mixer} /></div>
     </section><div className="sidebar-resizer" onPointerDown={(e) => beginResize(e, 'sidebar')} onPointerMove={moveResize} onPointerUp={() => { resizing.current = null }} onPointerCancel={() => { resizing.current = null }} /></section>
-    <section className="timeline-panel panel"><div className="timeline-resizer" onPointerDown={(e) => beginResize(e, 'timeline')} onPointerMove={moveResize} onPointerUp={() => { resizing.current = null }} onPointerCancel={() => { resizing.current = null }} /><div className="timeline-tools"><div className="tool-group"><span className="tool active">{selection.length} selected</span><button className="tool" disabled={!canSplit} onClick={split}><Scissors size={15} />Split</button><button className="tool" disabled={!selection.length} onClick={remove}><Trash2 size={15} />Remove</button><button className="tool" disabled={!canLink} onClick={() => changeLinks(false)}><Link2 size={15} />Link</button><button className="tool" disabled={!canUnlink} onClick={() => changeLinks(true)}><Unlink2 size={15} />Unlink</button></div><div className="edit-controls"><div className="align-controls"><button title="Step playhead back one frame (Left arrow)" disabled={!projectDuration} onClick={() => stepFrame(-1)}>−1 frame</button><button title="Step playhead forward one frame (Right arrow)" disabled={!projectDuration} onClick={() => stepFrame(1)}>+1 frame</button></div><div className="trim-inputs">{(['start', 'end'] as const).map((edge) => <label key={edge}>{edge === 'start' ? 'IN' : 'OUT'}<input type="number" step={frame} aria-label={`${edge} source seconds`} disabled={!selected} value={trimDraft[edge]} onChange={(e) => setTrimDraft((s) => ({ ...s, [edge]: e.target.value }))} onBlur={() => trimInput(edge)} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }} /></label>)}</div></div><div className="zoom"><button title="Add video track" onClick={() => addLane('video')}>+ V</button><button title="Add audio track" onClick={() => addLane('audio')}>+ A</button><button onClick={() => changeZoom(100)}>Fit</button><input aria-label="Timeline zoom" type="range" min="100" max="4000" step="50" value={zoom} onChange={(e) => changeZoom(Number(e.target.value))} /></div></div>
+    <section className="timeline-panel panel"><div className="timeline-resizer" onPointerDown={(e) => beginResize(e, 'timeline')} onPointerMove={moveResize} onPointerUp={() => { resizing.current = null }} onPointerCancel={() => { resizing.current = null }} /><div className="timeline-tools"><div className="tool-group"><span className="tool active">{selection.length} selected</span><button className={`tool snap-toggle ${snapping ? 'active' : ''}`} aria-label="Snap clip edges" aria-pressed={snapping} title="Snap edges across video/audio tracks and to the playhead; hold Alt to bypass" onClick={() => { setSnapping((value) => !value); setSnapGuide(undefined) }}><Magnet size={14} />Snap</button><button className="tool" disabled={!canSplit} onClick={split}><Scissors size={15} />Split</button><button className="tool" disabled={!selection.length} onClick={remove}><Trash2 size={15} />Remove</button><button className="tool" disabled={!canLink} onClick={() => changeLinks(false)}><Link2 size={15} />Link</button><button className="tool" disabled={!canUnlink} onClick={() => changeLinks(true)}><Unlink2 size={15} />Unlink</button></div><div className="edit-controls"><div className="align-controls"><button title="Step playhead back one frame (Left arrow)" disabled={!projectDuration} onClick={() => stepFrame(-1)}>−1 frame</button><button title="Step playhead forward one frame (Right arrow)" disabled={!projectDuration} onClick={() => stepFrame(1)}>+1 frame</button></div><div className="trim-inputs">{(['start', 'end'] as const).map((edge) => <label key={edge}>{edge === 'start' ? 'IN' : 'OUT'}<input type="number" step={frame} aria-label={`${edge} source seconds`} disabled={!selected} value={trimDraft[edge]} onChange={(e) => setTrimDraft((s) => ({ ...s, [edge]: e.target.value }))} onBlur={() => trimInput(edge)} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }} /></label>)}</div></div><div className="zoom"><button title="Add video track" onClick={() => addLane('video')}>+ V</button><button title="Add audio track" onClick={() => addLane('audio')}>+ A</button><button disabled={trimDuration !== null} onClick={() => changeZoom(100)}>Fit</button><input disabled={trimDuration !== null} aria-label="Timeline zoom" type="range" min="100" max="4000" step="50" value={zoom} onChange={(e) => changeZoom(Number(e.target.value))} /></div></div>
       <div className="timeline-scroll"><div className="timeline-content"><div className="track-labels"><div className="ruler-spacer" />{rows.map(({ kind, lane, index }) => <div key={`${kind}:${index}`} className={`track-header ${activeLane.kind === kind && activeLane.lane === index ? 'selected-track' : ''}`} onClick={() => selectLane(kind, index)}><button className="track-select">{kind === 'video' ? <Video size={13} /> : <AudioLines size={13} />}<span>{lane.name.toUpperCase()}</span></button><div className="lane-controls"><div className="track-switches"><button title={`${lane.muted ? 'Unmute' : 'Mute'} ${lane.name}`} aria-pressed={lane.muted} className={lane.muted ? 'switch-off' : ''} onClick={(e) => { e.stopPropagation(); setLaneFlag(kind, index, 'muted') }}>{lane.muted ? <VolumeX size={13} /> : <Volume2 size={13} />}</button>{kind === 'video' && <button title={`${lane.hidden ? 'Show' : 'Hide'} ${lane.name}`} aria-pressed={lane.hidden} onClick={(e) => { e.stopPropagation(); setLaneFlag(kind, index, 'hidden') }}>{lane.hidden ? <EyeOff size={13} /> : <Eye size={13} />}</button>}</div><Meter mixer={mixer} lane={`${kind}:${index}`} /></div></div>)}</div>
-      <div className="track-viewport" ref={viewportRef} style={{ height: `${30 + rows.length * 86 + 14}px` }}><div className="tracks" ref={tracksRef} style={{ width: `${zoom}%`, minHeight: `${30 + rows.length * 86}px` }}><div className="ruler" onPointerDown={beginScrub} onPointerMove={moveScrub} onPointerUp={() => { scrubbing.current = false }} onPointerCancel={() => { scrubbing.current = false }}>{Array.from({ length: Math.min(200, Math.max(7, Math.round(7 * zoom / 100))) }, (_, i) => i).map((_, i, list) => <span key={i} style={{ left: `${i / (list.length - 1) * 100}%` }}>{clock(i / (list.length - 1) * timelineDuration)}<i /></span>)}</div><div className="playhead" style={{ left: `${Math.min(100, position / timelineDuration * 100)}%` }}><i /></div>{rows.map(({ kind, lane, index }) => <div key={`${kind}:${index}`} className={`track ${kind}-track ${lane.hidden ? 'track-disabled' : ''}`} onPointerDown={(event) => { setActiveLane({ kind, lane: index }); beginScrub(event) }} onPointerMove={moveScrub} onPointerUp={() => { scrubbing.current = false }} onPointerCancel={() => { scrubbing.current = false }}>{edit[kind].filter((c) => c.lane === index).map((c) => renderClip(kind, c))}</div>)}</div></div></div></div>
-      <div className="timeline-help">Ctrl/Shift+click: multi-select · Drag to overlap: crossfade · Arrows: step · Alt+arrows: move clips · Top triangles: fades · Linked edges trim together · Effects: color, audio and sync · Wheel: zoom</div>
+      <div className="track-viewport" ref={viewportRef} style={{ height: `${30 + rows.length * 86 + 14}px` }}><div className="tracks" ref={tracksRef} style={{ width: `${zoom}%`, minHeight: `${30 + rows.length * 86}px` }}><div className="ruler" onPointerDown={beginScrub} onPointerMove={moveScrub} onPointerUp={() => { scrubbing.current = false }} onPointerCancel={() => { scrubbing.current = false }}>{Array.from({ length: Math.min(200, Math.max(7, Math.round(7 * zoom / 100))) }, (_, i) => i).map((_, i, list) => <span key={i} style={{ left: `${i / (list.length - 1) * 100}%` }}>{clock(i / (list.length - 1) * timelineDuration)}<i /></span>)}</div>{snapGuide !== undefined && snapGuide >= 0 && snapGuide <= timelineDuration && <div className="snap-guide" style={{ left: `${snapGuide / timelineDuration * 100}%` }} aria-hidden="true"><span>Snap</span></div>}<div className="playhead" style={{ left: `${Math.min(100, position / timelineDuration * 100)}%` }}><i /></div>{rows.map(({ kind, lane, index }) => <div key={`${kind}:${index}`} className={`track ${kind}-track ${lane.hidden ? 'track-disabled' : ''}`} onPointerDown={(event) => { setActiveLane({ kind, lane: index }); beginScrub(event) }} onPointerMove={moveScrub} onPointerUp={() => { scrubbing.current = false }} onPointerCancel={() => { scrubbing.current = false }}>{edit[kind].filter((c) => c.lane === index).map((c) => renderClip(kind, c))}</div>)}</div></div></div></div>
+      <div className="timeline-help">Ctrl/Shift+click: multi-select · Drag to overlap: crossfade · Arrows: step · Alt+arrows: move clips · Top triangles: fades · Snap: edges across tracks · Alt: bypass snap · Linked edges trim together · Effects: color, audio and sync · Wheel: zoom</div>
     </section>
     {exportProject && <ExportDialog project={exportProject} sourceFps={fps} onClose={() => setExportProject(null)} onBusy={setExporting} onStart={async () => { stop(); await switchProxyMode(false) }} onComplete={(path) => setNotice({ kind: 'success', message: `Export saved: ${path}` })} />}
   </main>

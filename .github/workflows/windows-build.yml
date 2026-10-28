@@ -55,6 +55,14 @@ jobs:
             Open your existing .mkproj file using File → Open project. Projects reference your original media; keep that footage.
             Use File → Associate .mkproj files with this app to register this portable location; Windows may still require Open with → Always.
 
+            ## Stable trim ruler and optional snapping (0.8.1)
+            - Keep timeline scale fixed for the full edge drag, then fit the new length after release.
+            - Independent trim extent and pointer-owner cleanup; Fit/zoom cannot alter a running trim.
+            - Optional Snap toolbar toggle for clip moves and edge trims across video/audio tracks.
+            - Snap to stationary starts/ends, zero or playhead; gold alignment guide; Alt temporarily bypasses.
+            - Snap defaults on and remembers the local preference. Linked offsets and trim limits remain intact.
+            - Project format stays v6; no media/export pipeline changes. Windows mouse interaction still needs hands-on confirmation.
+
             ## Mic hiss cleanup and linked trims (0.8.0)
             - Effects > Audio: Mic hiss reduction plus Gentle/Stronger/Off presets; Apply to prepare.
             - Adaptive spectral cleanup and a gentle treble shelf; preview/export share continuous cached processing.

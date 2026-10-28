@@ -59,17 +59,28 @@ export function transitionGain(clips: Segment[], clip: Segment, time: number) {
   const { incoming, outgoing } = transitionEdges(clips, clip), local = time - clip.at
   return Math.sin(Math.PI / 2 * Math.max(0, Math.min(1, incoming ? local / incoming : 1))) * Math.sin(Math.PI / 2 * Math.max(0, Math.min(1, outgoing ? (endAt(clip) - time) / outgoing : 1)))
 }
-export function moveClips(edit: TimelineEdit, ids: string[], requested: number, snapDistance = 0, playhead?: number) {
+export type TimelineDragResult = { edit: TimelineEdit; delta: number; snapTime?: number }
+// Use all stationary lanes so video and recorder edges can align, but never snap
+// a linked group to its own edges. A single delta keeps internal sync intact.
+function snapDelta(edit: TimelineEdit, selected: Set<string>, edges: number[], requested: number, radius: number, lower: number, upper: number, playhead?: number): { delta: number; snapTime?: number } {
+  let delta = Math.max(lower, Math.min(upper, requested)), snapTime: number | undefined
+  if (!Number.isFinite(radius) || radius <= 0) return { delta }
+  const targets = [0, ...(playhead !== undefined && Number.isFinite(playhead) ? [playhead] : []), ...all(edit).filter((c) => !selected.has(c.id)).flatMap((c) => [c.at, endAt(c)])]
+  let nearest = radius
+  for (const edge of edges) for (const target of targets) {
+    const candidate = target - edge, distance = Math.abs(candidate - requested)
+    if (candidate >= lower - 1e-9 && candidate <= upper + 1e-9 && distance < nearest) {
+      nearest = distance; delta = Math.max(lower, Math.min(upper, candidate)); snapTime = target
+    }
+  }
+  return { delta, snapTime }
+}
+export function moveClips(edit: TimelineEdit, ids: string[], requested: number, snapDistance = 0, playhead?: number): TimelineDragResult {
   const selected = new Set(linkedSelection(edit, ids)), moving = all(edit).filter((c) => selected.has(c.id))
   if (!moving.length || !Number.isFinite(requested)) return { edit, delta: 0 }
   const min = -Math.min(...moving.map((c) => c.at))
-  let delta = Math.max(min, requested)
-  const targets = [0, ...(playhead === undefined ? [] : [playhead]), ...all(edit).filter((c) => !selected.has(c.id)).flatMap((c) => [c.at, endAt(c)])]
-  let nearest = snapDistance
-  for (const c of moving) for (const edge of [c.at, endAt(c)]) for (const target of targets) {
-    const distance = Math.abs(target - edge - requested)
-    if (target - edge >= min && distance < nearest) { nearest = distance; delta = target - edge }
-  }
+  const snap = snapDelta(edit, selected, moving.flatMap((c) => [c.at, endAt(c)]), requested, snapDistance, min, Infinity, playhead)
+  let delta = snap.delta
   const shifted = (value: number) => map(edit, (c) => selected.has(c.id) ? { ...c, at: Math.max(0, c.at + value) } : c)
   const valid = (next: TimelineEdit) => tracks.every((track) => next.lanes[track].every((_, lane) => validLane(next[track].filter((c) => c.lane === lane))))
   // Preserve ordering and clamp before a clip would swallow another, or a third
@@ -79,8 +90,9 @@ export function moveClips(edit: TimelineEdit, ids: string[], requested: number, 
     for (let i = 0; i < 28; i++) { const fraction = (low + high) / 2; if (valid(shifted(delta * fraction))) low = fraction; else high = fraction }
     delta *= low
   }
-  if (Math.abs(delta) < 1e-9) return { edit, delta: 0 }
-  return { edit: shifted(delta), delta }
+  const snapTime = Math.abs(delta - snap.delta) < 1e-7 ? snap.snapTime : undefined
+  if (Math.abs(delta) < 1e-9) return { edit, delta: 0, snapTime }
+  return { edit: shifted(delta), delta, snapTime }
 }
 export function splitClips(edit: TimelineEdit, ids: string[], time: number, minimum: number, createId = () => crypto.randomUUID()) {
   const selected = new Set(linkedSelection(edit, ids))
@@ -113,7 +125,7 @@ export function splitClips(edit: TimelineEdit, ids: string[], time: number, mini
 }
 // Trim every linked partner by one shared source/timeline delta. Staggered edges
 // stay staggered: do not force different recordings to share source IN/OUT values.
-export function trimLinkedClips(edit: TimelineEdit, id: string, edge: 'start' | 'end', value: number, sourceDurations: Record<string, number>, minimum: number) {
+export function trimLinkedClips(edit: TimelineEdit, id: string, edge: 'start' | 'end', value: number, sourceDurations: Record<string, number>, minimum: number, snapDistance = 0, playhead?: number): TimelineDragResult & { limited: boolean } {
   const reference = all(edit).find((c) => c.id === id)
   if (!reference || !Number.isFinite(value) || !Number.isFinite(minimum) || minimum <= 0) return { edit, delta: 0, limited: false }
   const ids = new Set(linkedSelection(edit, [id])), group = all(edit).filter((c) => ids.has(c.id)), requested = value - reference[edge]
@@ -124,7 +136,8 @@ export function trimLinkedClips(edit: TimelineEdit, id: string, edge: 'start' | 
     if (edge === 'start') { lower = Math.max(lower, -c.start, -c.at); upper = Math.min(upper, length(c) - keep) }
     else { lower = Math.max(lower, keep - length(c)); upper = Math.min(upper, Math.max(0, duration - c.end)) }
   }
-  let delta = Math.max(lower, Math.min(upper, requested))
+  const snap = snapDelta(edit, ids, group.map((c) => edge === 'start' ? c.at : endAt(c)), requested, snapDistance, lower, upper, playhead)
+  let delta = snap.delta
   const changed = (amount: number) => map(edit, (c) => !ids.has(c.id) ? c : edge === 'start' ? { ...c, start: Math.max(0, c.start + amount), at: Math.max(0, c.at + amount) } : { ...c, end: c.end + amount })
   const affected = tracks.flatMap((track) => [...new Set(edit[track].filter((c) => ids.has(c.id)).map((c) => c.lane))].map((lane) => ({ track, lane })))
   const valid = (next: TimelineEdit) => affected.every(({ track, lane }) => validLane(next[track].filter((c) => c.lane === lane)))
@@ -135,6 +148,8 @@ export function trimLinkedClips(edit: TimelineEdit, id: string, edge: 'start' | 
     for (let i = 0; i < 32; i++) { const fraction = (low + high) / 2; if (valid(changed(delta * fraction))) low = fraction; else high = fraction }
     delta *= low
   }
-  if (Math.abs(delta) < 1e-9) return { edit, delta: 0, limited: Math.abs(requested) > 1e-7 }
-  return { edit: changed(delta), delta, limited: Math.abs(delta - requested) > 1e-7 }
+  const snapTime = Math.abs(delta - snap.delta) < 1e-7 ? snap.snapTime : undefined
+  const limited = Math.abs(delta - snap.delta) > 1e-7 || (snap.snapTime === undefined && Math.abs(delta - requested) > 1e-7)
+  if (Math.abs(delta) < 1e-9) return { edit, delta: 0, limited, snapTime }
+  return { edit: changed(delta), delta, limited, snapTime }
 }
