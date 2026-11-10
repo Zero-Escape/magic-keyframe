@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { activeClip, transitionEdges, transitionGain, endAt, type Segment, type TimelineEdit } from '../electron/timeline'
-import { effects, fadeFactor, type ClipEffects } from '../electron/effects'
+import { effects, fadeFactor, previewColorTable, type ClipEffects } from '../electron/effects'
 import type { MediaItem } from './editor-types'
 
 export class AudioMixer {
@@ -111,7 +111,7 @@ function VideoSurface({ clip, src, playing, position, override, fps, onDecoded }
     const compile = (kind: number, source: string) => { const shader = gl.createShader(kind)!; gl.shaderSource(shader, source); gl.compileShader(shader); if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader) || 'Preview shader failed'); return shader }
     let vert: WebGLShader, frag: WebGLShader
     try { vert = compile(gl.VERTEX_SHADER, 'attribute vec2 p;varying vec2 uv;void main(){uv=vec2((p.x+1.0)*0.5,1.0-(p.y+1.0)*0.5);gl_Position=vec4(p,0.0,1.0);}')
-    frag = compile(gl.FRAGMENT_SHADER, 'precision mediump float;varying vec2 uv;uniform sampler2D image;uniform vec3 gain;uniform float contrast;uniform float saturation;uniform float fade;void main(){vec3 c=clamp((texture2D(image,uv).rgb*gain-vec3(0.5))*contrast+vec3(0.5),0.0,1.0);float l=dot(c,vec3(0.2126,0.7152,0.0722));gl_FragColor=vec4(clamp(mix(vec3(l),c,saturation),0.0,1.0)*fade,1.0);}')
+    frag = compile(gl.FRAGMENT_SHADER, 'precision mediump float;varying vec2 uv;uniform sampler2D image;uniform vec3 gain;uniform float contrast;uniform float saturation;uniform float shadows;uniform float highlights;uniform float fade;void main(){vec3 c=clamp((texture2D(image,uv).rgb*gain-vec3(0.5))*contrast+vec3(0.5),0.0,1.0);c=c+shadows*c*(vec3(1.0)-c)*(vec3(1.0)-c)+highlights*c*c*(vec3(1.0)-c);float l=dot(c,vec3(0.2126,0.7152,0.0722));gl_FragColor=vec4(clamp(mix(vec3(l),c,saturation),0.0,1.0)*fade,1.0);}')
     } catch { setFallback(true); return }
     const program = gl.createProgram()!; gl.attachShader(program, vert); gl.attachShader(program, frag); gl.linkProgram(program); if (!gl.getProgramParameter(program, gl.LINK_STATUS)) { setFallback(true); return }; gl.useProgram(program)
     const buffer = gl.createBuffer()!; gl.bindBuffer(gl.ARRAY_BUFFER, buffer); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW)
@@ -139,6 +139,7 @@ function VideoSurface({ clip, src, playing, position, override, fps, onDecoded }
         const cw = canvas.width, ch = canvas.height, w = Math.min(cw, ch * aspect), h = w / aspect
         gl.viewport((cw - w) / 2, (ch - h) / 2, w, h)
         gl.uniform3f(gl.getUniformLocation(program, 'gain'), gain * (1 + e.temperature * .12), gain, gain * (1 - e.temperature * .12))
+        gl.uniform1f(gl.getUniformLocation(program, 'shadows'), e.shadows / 100); gl.uniform1f(gl.getUniformLocation(program, 'highlights'), e.highlights / 100)
         gl.uniform1f(gl.getUniformLocation(program, 'contrast'), e.contrast); gl.uniform1f(gl.getUniformLocation(program, 'saturation'), e.saturation)
         gl.uniform1f(gl.getUniformLocation(program, 'fade'), fadeFactor(s.position - s.clip.at, d, Math.min(e.fadeIn, d / 2), Math.min(e.fadeOut, d / 2)))
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
@@ -154,8 +155,9 @@ function VideoSurface({ clip, src, playing, position, override, fps, onDecoded }
     events.forEach((event) => video.addEventListener(event, refresh)); queue()
     return () => { disposed = true; redraw.current = () => {}; events.forEach((event) => video.removeEventListener(event, refresh)); if (callback) video.cancelVideoFrameCallback(callback); cancelAnimationFrame(frame); video.pause(); gl.deleteTexture(texture); gl.deleteBuffer(buffer); gl.deleteProgram(program); gl.deleteShader(vert); gl.deleteShader(frag) }
   }, [])
-  const displayed = effects(override || clip.effects), d = clip.end - clip.start
-  return <><video ref={videoRef} className={fallback ? 'fallback-decoder' : 'preview-decoder'} style={fallback ? { filter: `brightness(${2 ** displayed.exposure}) contrast(${displayed.contrast}) saturate(${displayed.saturation})`, opacity: fadeFactor(position - clip.at, d, Math.min(displayed.fadeIn, d / 2), Math.min(displayed.fadeOut, d / 2)) } : undefined} src={src} muted playsInline preload="auto" onError={() => { setDecodeError(true); state.current.onDecoded() }} />{decodeError && <div className="source-decode-error">This source format cannot play directly in the browser. Enable optional proxies in the toolbar to preview it; your original footage is unchanged.</div>}{fallback && <span className="audio-preparing">Compatibility preview: warmth is export-only without WebGL.</span>}<canvas className={`graded-preview ${fallback ? 'hidden' : ''}`} ref={canvasRef} width={1280} height={720} /></>
+  const filterId = useId().replace(/:/g, ''), displayed = effects(override || clip.effects), d = clip.end - clip.start
+  const colorTables = useMemo(() => fallback ? [0, 1, 2].map((channel) => previewColorTable(displayed, channel)) : [], [fallback, displayed.exposure, displayed.contrast, displayed.shadows, displayed.highlights, displayed.temperature])
+  return <><svg width="0" height="0" aria-hidden="true" style={{ position: 'absolute' }}><defs><filter id={filterId} colorInterpolationFilters="sRGB"><feComponentTransfer><feFuncR type="table" tableValues={colorTables[0]} /><feFuncG type="table" tableValues={colorTables[1]} /><feFuncB type="table" tableValues={colorTables[2]} /></feComponentTransfer><feColorMatrix type="saturate" values={String(displayed.saturation)} /></filter></defs></svg><video ref={videoRef} className={fallback ? 'fallback-decoder' : 'preview-decoder'} style={fallback ? { filter: `url(#${filterId})`, opacity: fadeFactor(position - clip.at, d, Math.min(displayed.fadeIn, d / 2), Math.min(displayed.fadeOut, d / 2)) } : undefined} src={src} muted playsInline preload="auto" onError={() => { setDecodeError(true); state.current.onDecoded() }} />{decodeError && <div className="source-decode-error">This source format cannot play directly in the browser. Enable optional proxies in the toolbar to preview it; your original footage is unchanged.</div>}{fallback && <span className="audio-preparing">Compatibility preview: software color filters (no WebGL).</span>}<canvas className={`graded-preview ${fallback ? 'hidden' : ''}`} ref={canvasRef} width={1280} height={720} /></>
 }
 // Two stable decoder slots avoid remounting at ordinary cuts while allowing both
 // sides of an overlap to decode simultaneously (including one shared source file).

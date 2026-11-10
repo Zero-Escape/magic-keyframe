@@ -78,7 +78,7 @@ export default function App() {
   const undo = () => { if (!undoStack.length) return; setRedoStack((s) => [...s, state]); restore(undoStack.at(-1)!); setUndoStack((s) => s.slice(0, -1)) }
   const redo = () => { if (!redoStack.length) return; setUndoStack((s) => [...s, state]); restore(redoStack.at(-1)!); setRedoStack((s) => s.slice(0, -1)) }
   const draftChanged = useCallback((value?: { id: string; value: ClipEffects }) => setDraft(value), [])
-  const project = (): ProjectData => ({ format: 'magic-keyframe-project', version: 6, media: media.map(({ id, kind, path }) => ({ id, kind, path })), edit, view: { position: positionRef.current, zoom, timelineHeight, sidebarWidth } })
+  const project = (): ProjectData => ({ format: 'magic-keyframe-project', version: 7, media: media.map(({ id, kind, path }) => ({ id, kind, path })), edit, view: { position: positionRef.current, zoom, timelineHeight, sidebarWidth } })
   const projectRef = useRef(project()); projectRef.current = project()
 
   useEffect(() => { document.title = `${dirty ? '● ' : ''}${title} — Magic Keyframe`; window.magicKey?.setProjectDirty(dirty) }, [dirty, title])

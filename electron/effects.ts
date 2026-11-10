@@ -1,12 +1,12 @@
 export type ClipEffects = {
   gainDb: number; audioFadeIn: number; audioFadeOut: number
   vocal: number; noise: number; hiss: number; compression: number; leveling: number
-  exposure: number; contrast: number; saturation: number; temperature: number
+  exposure: number; shadows: number; highlights: number; contrast: number; saturation: number; temperature: number
   fadeIn: number; fadeOut: number
 }
-export const defaultEffects: ClipEffects = { gainDb: 0, audioFadeIn: 0, audioFadeOut: 0, vocal: 0, noise: 0, hiss: 0, compression: 0, leveling: 0, exposure: 0, contrast: 1, saturation: 1, temperature: 0, fadeIn: 0, fadeOut: 0 }
+export const defaultEffects: ClipEffects = { gainDb: 0, audioFadeIn: 0, audioFadeOut: 0, vocal: 0, noise: 0, hiss: 0, compression: 0, leveling: 0, exposure: 0, shadows: 0, highlights: 0, contrast: 1, saturation: 1, temperature: 0, fadeIn: 0, fadeOut: 0 }
 export const effectLimits: Record<keyof ClipEffects, [number, number]> = {
-  gainDb: [-60, 18], audioFadeIn: [0, 30], audioFadeOut: [0, 30], vocal: [0, 1], noise: [0, 30], hiss: [0, 18], compression: [0, 1], leveling: [0, 1], exposure: [-3, 3], contrast: [.5, 2], saturation: [0, 2], temperature: [-1, 1], fadeIn: [0, 10], fadeOut: [0, 10],
+  gainDb: [-60, 18], audioFadeIn: [0, 30], audioFadeOut: [0, 30], vocal: [0, 1], noise: [0, 30], hiss: [0, 18], compression: [0, 1], leveling: [0, 1], exposure: [-3, 3], shadows: [-100, 100], highlights: [-100, 100], contrast: [.5, 2], saturation: [0, 2], temperature: [-1, 1], fadeIn: [0, 10], fadeOut: [0, 10],
 }
 export function effects(value?: Partial<ClipEffects>): ClipEffects { return { ...defaultEffects, ...value } }
 export function fadeFactor(time: number, duration: number, fadeIn: number, fadeOut: number) {
@@ -28,13 +28,27 @@ export function audioProcessing(e: ClipEffects) {
   if (e.compression > 0 || e.leveling > 0) filters.push('alimiter=limit=0.95:level=0:latency=1')
   return filters
 }
+// Smooth monotonic SDR curve: black/white stay anchored; zero is identity.
+// Keep this polynomial identical in the preview shader and export LUT.
+export function tonalValue(x: number, shadows: number, highlights: number) {
+  return x + shadows / 100 * x * (1 - x) ** 2 + highlights / 100 * x ** 2 * (1 - x)
+}
+export function previewColorTable(e: ClipEffects, channel: number) {
+  const gain = 2 ** e.exposure * (1 + (channel === 0 ? 1 : channel === 2 ? -1 : 0) * e.temperature * .12)
+  return Array.from({ length: 257 }, (_, i) => {
+    const x = Math.max(0, Math.min(1, (i / 256 * gain - .5) * e.contrast + .5))
+    return tonalValue(x, e.shadows, e.highlights).toFixed(7)
+  }).join(' ')
+}
 export function videoProcessing(e: ClipEffects, duration: number) {
   const gain = 2 ** e.exposure, white = [1 + e.temperature * .12, 1, 1 - e.temperature * .12]
   const rgb = ['r', 'g', 'b'].map((channel, i) => `${channel}='clip((val*${(gain * white[i]).toFixed(7)}-maxval/2)*${e.contrast.toFixed(7)}+maxval/2,0,maxval)'`).join(':')
+  const tone = `val+${(e.shadows / 100).toFixed(7)}*val*pow(1-val/maxval,2)+${(e.highlights / 100).toFixed(7)}*pow(val/maxval,2)*(maxval-val)`
+  const tonal = e.shadows !== 0 || e.highlights !== 0 ? `,lutrgb=r='${tone}':g='${tone}':b='${tone}'` : ''
   const sat = e.saturation, luma = [.2126, .7152, .0722]
   const matrix = ['r', 'g', 'b'].flatMap((row, r) => ['r', 'g', 'b'].map((col, c) => `${row}${col}=${((1 - sat) * luma[c] + (r === c ? sat : 0)).toFixed(7)}`)).join(':')
-  const graded = e.exposure !== 0 || e.contrast !== 1 || e.saturation !== 1 || e.temperature !== 0
-  const filters = graded ? [`format=gbrp16le,lutrgb=${rgb},colorchannelmixer=${matrix}`] : []
+  const graded = e.shadows !== 0 || e.highlights !== 0 || e.exposure !== 0 || e.contrast !== 1 || e.saturation !== 1 || e.temperature !== 0
+  const filters = graded ? [`format=gbrp16le,lutrgb=${rgb}${tonal},colorchannelmixer=${matrix}`] : []
   if (e.fadeIn > 0) filters.push(`fade=t=in:st=0:d=${Math.min(e.fadeIn, duration / 2).toFixed(6)}`)
   if (e.fadeOut > 0) { const d = Math.min(e.fadeOut, duration / 2); filters.push(`fade=t=out:st=${Math.max(0, duration - d).toFixed(6)}:d=${d.toFixed(6)}`) }
   return filters

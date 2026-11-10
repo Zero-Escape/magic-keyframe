@@ -55,6 +55,13 @@ jobs:
             Open your existing .mkproj file using File → Open project. Projects reference your original media; keep that footage.
             Use File → Associate .mkproj files with this app to register this portable location; Windows may still require Open with → Always.
 
+            ## Shadows and Highlights (0.9.0)
+            - Effects > Color: independent Shadows and Highlights sliders, -100 to +100, neutral at zero.
+            - Live draft preview; Apply to clip saves the grade for export. Reset and bypass include both.
+            - Smooth selective tonal curves shared by WebGL preview, software fallback and export.
+            - Opens existing v1-v6 projects; saves v7. Use Save As to retain an older-build-compatible copy.
+            - Linux render fixtures and renderer interaction checks do not prove native Windows/GPU behavior.
+
             ## Stable trim ruler and optional snapping (0.8.1)
             - Keep timeline scale fixed for the full edge drag, then fit the new length after release.
             - Independent trim extent and pointer-owner cleanup; Fit/zoom cannot alter a running trim.
@@ -132,7 +139,7 @@ jobs:
             - Autosave recovery copies (5-second idle / 30-second periodic, retaining 10 versions per project).
             - 4K / 1080p delivery, both 8-bit H.264/AAC Rec.709 MP4.
 
-            Existing v1-v5 projects open. Saving writes v6; use Save As to retain an old-format copy.
+            Existing v1-v6 projects open. Saving writes v7; use Save As to retain an old-format copy.
             Select a clip and open Effects; draft settings must be applied before they are saved/exported.
             Imports append on track 1; + on a media item adds a copy at the playhead, using a free new track if needed.
             Add tracks with +V / +A; assign clips through the Effects track selector.

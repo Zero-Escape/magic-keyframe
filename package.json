@@ -1,6 +1,6 @@
 {
   "name": "magic-keyframe",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "private": true,
   "description": "A focused wedding video editor for Byrne Photography.",
   "author": "Byrne Photography",
@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "package:win": "npm run prepare:desktop && npm run build && electron-builder --win nsis",
     "package:dir": "npm run build && electron-builder --dir",
+    "verify:tonal": "npm run build && node scripts/verify-tonal.cjs",
     "verify:media": "npm run build && node scripts/verify-export.cjs",
     "prepare:desktop": "node scripts/prepare-desktop.cjs",
     "start": "npm run prepare:desktop && npm run build && electron .",

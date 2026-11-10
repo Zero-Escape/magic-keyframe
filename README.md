@@ -378,3 +378,23 @@ to place overlaps/crossfades freely. This is edge alignment, not waveform auto-s
 Production/package checks are not mouse-interaction verification. Try trimming the
 longest linked clip, release, undo, and compare Snap on/off on the Windows app.
 Project format remains v6; media/rendering code is unchanged.
+
+## Shadows and Highlights (v0.9.0)
+
+Select a video clip, open **Effects → Color**, then adjust **Shadows** and
+**Highlights** from −100 to +100. Zero is neutral; positive brightens and negative
+darkens the affected tones. Draft changes preview live; **Apply to clip** commits
+them for save/export. Reset draft and comparison bypass include both controls,
+and the existing selected-clips option can apply the grade across selected footage.
+
+Smooth per-channel SDR curves protect black/white endpoints, with broad tonal
+falloff rather than hard thresholds. They cannot recover detail already clipped
+in the recording or by earlier exposure/contrast adjustments. Preview (WebGL and
+software SVG fallback) and the 16-bit RGB export LUT use the same curve, before
+saturation/fades. Software preview uses a 257-entry interpolated table.
+
+This release opens project formats v1–v6 and saves **v7** for these settings.
+**Save As** a new project to retain an older-build-compatible original.
+
+Verification: `npm run build` and `node scripts/verify-tonal.cjs`. See
+[tonal-control verification](docs/SHADOWS-HIGHLIGHTS-0.9.0.md) for scope and limitations.
